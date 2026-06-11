@@ -27,8 +27,8 @@ Toute sortie va sur stdout/stderr, redirigée vers les logs par cron.
 Dépendances (requirements.txt) :
     requests        # appels API REST
     python-dotenv   # chargement de la clé RapidAPI depuis .env
+    feedparser      # parsing des flux RSS d'actualité
 Dépendances prévues pour la suite :
-    feedparser      # parsing RSS/Atom
     psycopg[binary] # driver PostgreSQL 3.x
 """
 
@@ -37,10 +37,12 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any
 
+import feedparser
 import requests
 from dotenv import load_dotenv
 
@@ -62,15 +64,6 @@ FENETRE_FIN = 9     # 09:00 (exclu)
 # Le cron relance ce script toutes les 5-15 min pendant la fenêtre nocturne :
 # ce fichier d'état mémorise la date du dernier appel pour ne pas le répéter.
 FICHIER_ETAT_API = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".derniere_date_api")
-
-# Flux RSS d'actualité sportive à parser (séparés par des virgules)
-RSS_FEEDS = [
-    u for u in os.environ.get(
-        "ORACLE_RSS_FEEDS",
-        "https://www.example-foot.com/rss/cdm2026,"
-        "https://www.example-mercato.com/rss/selections",
-    ).split(",") if u
-]
 
 # Connexion PostgreSQL (l'utilisateur scraper n'a que INSERT/SELECT, cf. schema.sql)
 PG_DSN = os.environ.get(
@@ -194,22 +187,78 @@ def recuperer_contexte_match(match: dict[str, Any]) -> list[EvenementContexte]:
 # ÉTAPE 2 — Flux RSS d'actualité
 # -----------------------------------------------------------------------------
 
-def parser_flux_rss(urls: list[str]) -> list[EvenementContexte]:
-    """Parcourt les flux RSS et transforme les entrées pertinentes en évènements.
+# Mots déclencheurs : un article n'est retenu que s'il évoque un risque sportif…
+MOTS_CLES_ALERTE = ["blessure", "forfait", "tension", "polémique"]
 
-    À implémenter :
-      - `feedparser.parse(url)` pour chaque flux (gérer bozo/erreurs réseau
-        sans interrompre les autres flux) ;
-      - ne garder que les entrées publiées depuis le dernier passage
-        (comparer entry.published à un curseur persistant, ex. table technique
-        ou fichier d'état) ;
-      - détecter le match et l'équipe concernés (mots-clés : noms d'équipes,
-        joueurs connus de la table `equipes`) ;
-      - classifier l'entrée -> type_evenement ('RUMEUR', 'METEO', 'SUSPENSION'…)
-        et estimer impact_score + fiabilite_source selon le média ;
-      - source = URL de l'article (sert de clé naturelle anti-doublon).
+# …ou un pays participant à la CDM 2026 (extrait — à synchroniser avec la
+# table `equipes` une fois la liste des 48 qualifiés chargée en base).
+PAYS_PARTICIPANTS = [
+    "France", "Brésil", "Argentine", "Canada", "Mexique", "États-Unis",
+    "Angleterre", "Espagne", "Allemagne", "Portugal", "Pays-Bas", "Belgique",
+    "Croatie", "Maroc", "Sénégal", "Japon", "Uruguay", "Colombie", "Équateur",
+]
+
+
+def parser_flux_rss() -> list[dict[str, Any]]:
+    """Récupère gratuitement les rumeurs/actualités via les flux RSS sportifs.
+
+    Pour chaque article : extraction du titre et du résumé, puis filtre textuel
+    basique — on ne garde que les articles mentionnant un mot d'alerte
+    (MOTS_CLES_ALERTE) ou un pays participant (PAYS_PARTICIPANTS).
+
+    Retourne une liste de dictionnaires :
+        {titre, resume, lien, source, publie_le, mots_cles}
+    `mots_cles` liste les déclencheurs trouvés — utile ensuite pour classifier
+    l'évènement (RUMEUR, BLESSURE…) et le rattacher à un match via les noms
+    d'équipes. `lien` servira de clé naturelle anti-doublon (colonne `source`
+    de contexte_actu).
     """
-    raise NotImplementedError
+    flux_rss = [
+        # L'Équipe football — l'ancien chemin /rss/actu_rss_Football.xml renvoie 404
+        "https://dwh.lequipe.fr/api/edito/rss?path=/Football/",
+        "https://rmcsport.bfmtv.com/rss/football/coupe-du-monde/",
+    ]
+
+    declencheurs = MOTS_CLES_ALERTE + PAYS_PARTICIPANTS
+    articles_pertinents: list[dict[str, Any]] = []
+
+    for url in flux_rss:
+        try:
+            flux = feedparser.parse(url)
+        except Exception:
+            # Un flux en panne ne doit pas bloquer les autres
+            logger.exception("Flux RSS illisible : %s", url)
+            continue
+
+        if getattr(flux, "bozo", False) and not flux.entries:
+            logger.warning("Flux RSS invalide ou inaccessible : %s", url)
+            continue
+
+        for entree in flux.entries:
+            titre = (entree.get("title") or "").strip()
+            # Le résumé RSS contient souvent du HTML : on le retire pour
+            # obtenir du texte propre (filtre + futur prompt LLM).
+            resume = re.sub(r"<[^>]+>", " ", entree.get("summary") or "")
+            resume = re.sub(r"\s+", " ", resume).strip()
+
+            texte = f"{titre} {resume}".lower()
+            mots_trouves = [m for m in declencheurs if m.lower() in texte]
+            if not mots_trouves:
+                continue
+
+            articles_pertinents.append({
+                "titre": titre,
+                "resume": resume,
+                "lien": entree.get("link", ""),
+                "source": url,
+                "publie_le": entree.get("published") or entree.get("updated") or "",
+                "mots_cles": mots_trouves,
+            })
+
+        logger.info("Flux %s : %d entrée(s) lue(s)", url, len(flux.entries))
+
+    logger.info("RSS : %d article(s) pertinent(s) après filtrage", len(articles_pertinents))
+    return articles_pertinents
 
 
 # -----------------------------------------------------------------------------
@@ -277,11 +326,15 @@ def executer_cycle() -> int:
             # Un volet en panne ne doit pas empêcher l'autre de produire des données
             logger.exception("Échec du volet API stats")
 
-    # 2. Flux RSS
+    # 2. Flux RSS — gratuit et illimité : c'est lui qui porte le contexte fin
     try:
-        evenements.extend(parser_flux_rss(RSS_FEEDS))
-    except NotImplementedError:
-        logger.warning("Volet RSS non implémenté — ignoré pour ce cycle")
+        articles = parser_flux_rss()
+        # TODO étape suivante : rattacher chaque article à un matchs.id via les
+        # noms d'équipes (mots_cles), le classifier (RUMEUR, BLESSURE…) et le
+        # convertir en EvenementContexte pour l'insertion ci-dessous.
+        if articles:
+            logger.info("Volet RSS : %d article(s) en attente de rattachement aux matchs",
+                        len(articles))
     except Exception:
         logger.exception("Échec du volet RSS")
 
