@@ -6,3 +6,4 @@ logs/
 .env
 ingestion/.derniere_date_api
 ingestion/.matchs_du_jour.json
+ingestion/.derniere_reponse_api.json

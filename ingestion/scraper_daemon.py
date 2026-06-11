@@ -71,6 +71,10 @@ FICHIER_ETAT_API = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".de
 # fichier pour pouvoir quand même réconcilier les nouveaux articles RSS.
 FICHIER_MATCHS_JOUR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".matchs_du_jour.json")
 
+# Réponse API brute, sauvegardée telle quelle : permet de re-parser/déboguer
+# sans reconsommer une requête du quota mensuel.
+FICHIER_REPONSE_API = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".derniere_reponse_api.json")
+
 # Connexion PostgreSQL : variables DB_* chargées depuis .env (cf. .env.example).
 # L'utilisateur scraper n'a besoin que de INSERT/SELECT (cf. schema.sql).
 
@@ -155,13 +159,21 @@ def recuperer_matchs_du_jour():
         response.raise_for_status()
         data = response.json()
 
+        # Sauvegarde brute : re-parsing possible sans reconsommer le quota
+        with open(FICHIER_REPONSE_API, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+        # Pas de filtre ligue pour l'instant : le nommage exact de la CDM dans
+        # cette API est inconnu — on prend tout et on observe la structure.
         matchs_cdm = []
         if "results" in data:
             for match in data["results"]:
-                if "World Cup" in match.get("league_name", "") or match.get("league_id") == 1:
-                    matchs_cdm.append(match)
+                print(f"Match trouvé : {match.get('homeTeam')} vs {match.get('awayTeam')}")
+                matchs_cdm.append(match)
+        else:
+            print(f"⚠ Clé 'results' absente — clés reçues : {list(data)} (réponse brute sauvegardée)")
 
-        print(f"✅ Succès : {len(matchs_cdm)} match(s) de Coupe du Monde trouvé(s).")
+        print(f"✅ Succès : {len(matchs_cdm)} match(s) trouvé(s).")
         return matchs_cdm
 
     except requests.exceptions.RequestException as e:
@@ -197,6 +209,8 @@ PAYS_PARTICIPANTS = [
     "France", "Brésil", "Argentine", "Canada", "Mexique", "États-Unis",
     "Angleterre", "Espagne", "Allemagne", "Portugal", "Pays-Bas", "Belgique",
     "Croatie", "Maroc", "Sénégal", "Japon", "Uruguay", "Colombie", "Équateur",
+    "Afrique du Sud", "Corée du Sud", "Tchéquie", "Autriche", "Nigéria",
+    "Guatemala",
 ]
 
 
@@ -266,6 +280,11 @@ def parser_flux_rss() -> list[dict[str, Any]]:
 # ÉTAPE 3 — Réconciliation matchs API <-> articles RSS
 # -----------------------------------------------------------------------------
 
+# Identifiants de ligue de la Coupe du Monde dans cette API, observés dans les
+# réponses réelles des 11-12/06/2026 (matchs de sélections nationales :
+# Mexico-South Africa en ouverture, Portugal-Nigeria, Austria-Guatemala…).
+LIGUES_CDM = {894790, 914609}
+
 # L'API renvoie les noms d'équipes en anglais, les flux RSS sont en français :
 # table de correspondance pour que le rapprochement fonctionne dans les 2 sens.
 NOMS_EQUIPES_FR = {
@@ -276,6 +295,21 @@ NOMS_EQUIPES_FR = {
     "belgium": "Belgique", "croatia": "Croatie", "morocco": "Maroc",
     "senegal": "Sénégal", "japan": "Japon", "uruguay": "Uruguay",
     "colombia": "Colombie", "ecuador": "Équateur",
+    "south africa": "Afrique du Sud", "south korea": "Corée du Sud",
+    "czechia": "Tchéquie", "austria": "Autriche", "nigeria": "Nigéria",
+    "guatemala": "Guatemala",
+}
+
+# Codes FIFA des équipes connues (equipes.code_fifa est NOT NULL UNIQUE).
+# Repli pour les autres : 3 premières lettres du nom, sans accents.
+CODES_FIFA = {
+    "France": "FRA", "Brésil": "BRA", "Argentine": "ARG", "Canada": "CAN",
+    "Mexique": "MEX", "États-Unis": "USA", "Angleterre": "ENG", "Espagne": "ESP",
+    "Allemagne": "GER", "Portugal": "POR", "Pays-Bas": "NED", "Belgique": "BEL",
+    "Croatie": "CRO", "Maroc": "MAR", "Sénégal": "SEN", "Japon": "JPN",
+    "Uruguay": "URU", "Colombie": "COL", "Équateur": "ECU",
+    "Afrique du Sud": "RSA", "Corée du Sud": "KOR", "Tchéquie": "CZE",
+    "Autriche": "AUT", "Nigéria": "NGA", "Guatemala": "GUA",
 }
 
 
@@ -295,6 +329,83 @@ def _noms_equipes(match: dict[str, Any]) -> set[str]:
     return noms
 
 
+def _statut_depuis_api(status: dict[str, Any]) -> str:
+    """Mappe les drapeaux de statut de l'API vers l'ENUM statut_match."""
+    if status.get("cancelled"):
+        return "REPORTE"
+    if status.get("finished"):
+        return "TERMINE"
+    if status.get("started"):
+        return "EN_COURS"
+    return "A_VENIR"
+
+
+def inserer_matchs_en_base(conn: Any, matchs_api: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Insère/actualise en base les matchs CDM de l'API et lie les identifiants.
+
+    Sans cette étape, ni la réconciliation ni le moteur IA ne peuvent voir les
+    matchs : contexte_actu et pronostics_llm pointent vers matchs.id (SERIAL
+    local), pas vers l'id de l'API. Chaque match CDM traité reçoit donc ici une
+    clé 'db_match_id' utilisée ensuite par reconcilier_donnees().
+
+    Les matchs hors LIGUES_CDM sont ignorés (pas de pollution de la base avec
+    les ligues mineures que l'API renvoie en vrac).
+    """
+    traites = []
+    with conn.cursor() as cur:
+        for m in matchs_api:
+            if m.get("leagueId") not in LIGUES_CDM:
+                continue
+
+            # 1. Équipes (upsert minimal — stats FIFA enrichies plus tard)
+            ids = {}
+            for cote in ("home", "away"):
+                nom_api = ((m.get(cote) or {}).get("name") or "").strip()
+                if not nom_api:
+                    break
+                nom = NOMS_EQUIPES_FR.get(nom_api.lower(), nom_api)
+                code = CODES_FIFA.get(nom, nom.upper().replace("É", "E")[:3])
+                cur.execute(
+                    """INSERT INTO equipes (nom, code_fifa, confederation)
+                       VALUES (%s, %s, 'INCONNUE') ON CONFLICT DO NOTHING""",
+                    (nom, code),
+                )
+                cur.execute("SELECT id FROM equipes WHERE nom = %s", (nom,))
+                ligne = cur.fetchone()
+                if ligne:
+                    ids[cote] = ligne[0]
+            if len(ids) != 2 or ids["home"] == ids["away"]:
+                continue
+
+            # 2. Match (clé naturelle : les 2 équipes + coup d'envoi)
+            coup_envoi = datetime.datetime.fromisoformat(
+                m["status"]["utcTime"].replace("Z", "+00:00"))
+            statut = _statut_depuis_api(m.get("status") or {})
+            cur.execute(
+                """SELECT id FROM matchs
+                   WHERE equipe_dom_id = %s AND equipe_ext_id = %s AND coup_envoi = %s""",
+                (ids["home"], ids["away"], coup_envoi),
+            )
+            ligne = cur.fetchone()
+            if ligne:
+                db_id = ligne[0]
+                cur.execute("UPDATE matchs SET statut = %s WHERE id = %s", (statut, db_id))
+            else:
+                cur.execute(
+                    """INSERT INTO matchs (equipe_dom_id, equipe_ext_id, coup_envoi,
+                                           phase, statut)
+                       VALUES (%s, %s, %s, 'Phase de groupes', %s) RETURNING id""",
+                    (ids["home"], ids["away"], coup_envoi, statut),
+                )
+                db_id = cur.fetchone()[0]
+
+            m["db_match_id"] = db_id
+            traites.append(m)
+
+    logger.info("Matchs CDM synchronisés en base : %d", len(traites))
+    return traites
+
+
 def reconcilier_donnees(matchs_api: list[dict[str, Any]],
                         articles_rss: list[dict[str, Any]]) -> list[EvenementContexte]:
     """Rattache chaque article RSS aux matchs dont une équipe est citée.
@@ -311,7 +422,10 @@ def reconcilier_donnees(matchs_api: list[dict[str, Any]],
     evenements: list[EvenementContexte] = []
 
     for match in matchs_api:
-        match_id = match.get("id") or match.get("match_id") or match.get("fixture_id")
+        # db_match_id (posé par inserer_matchs_en_base) = matchs.id local, la
+        # seule clé que contexte_actu accepte ; les ids API servent de repli.
+        match_id = (match.get("db_match_id") or match.get("match_id")
+                    or match.get("id") or match.get("fixture_id"))
         if not match_id:
             continue
         equipes = _noms_equipes(match)
@@ -441,35 +555,46 @@ def executer_cycle() -> int:
             # Un volet en panne ne doit pas empêcher l'autre de produire des données
             logger.exception("Échec du volet API stats")
 
-    # 2. Flux RSS — gratuit et illimité : c'est lui qui porte le contexte fin
-    articles: list[dict[str, Any]] = []
-    try:
-        articles = parser_flux_rss()
-    except Exception:
-        logger.exception("Échec du volet RSS")
-
-    # 3. Réconciliation : articles RSS rattachés aux matchs du jour
-    evenements = reconcilier_donnees(matchs_api, articles)
-    if not evenements:
-        logger.info("Cycle terminé : aucun évènement à insérer")
-        return 0
-
-    # 4. Insertion idempotente
+    # 2. Synchronisation des matchs CDM en base (donne les matchs.id locaux
+    #    dont la réconciliation et le moteur IA ont besoin)
     try:
         conn = connecter_postgres()
     except Exception:
         logger.exception("Connexion PostgreSQL impossible (variables DB_* du .env ?)")
         return 2
     try:
-        inseres = inserer_evenements(conn, evenements)
-        conn.commit()
-        logger.info("Cycle terminé : %d collecté(s), %d inséré(s) (doublons ignorés)",
-                    len(evenements), inseres)
-        return 0
-    except Exception:
-        conn.rollback()
-        logger.exception("Échec de l'insertion — transaction annulée")
-        return 2
+        if matchs_api:
+            try:
+                matchs_api = inserer_matchs_en_base(conn, matchs_api)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.exception("Échec de la synchronisation des matchs")
+
+        # 3. Flux RSS — gratuit et illimité : c'est lui qui porte le contexte fin
+        articles: list[dict[str, Any]] = []
+        try:
+            articles = parser_flux_rss()
+        except Exception:
+            logger.exception("Échec du volet RSS")
+
+        # 4. Réconciliation : articles RSS rattachés aux matchs du jour
+        evenements = reconcilier_donnees(matchs_api, articles)
+        if not evenements:
+            logger.info("Cycle terminé : aucun évènement à insérer")
+            return 0
+
+        # 5. Insertion idempotente
+        try:
+            inseres = inserer_evenements(conn, evenements)
+            conn.commit()
+            logger.info("Cycle terminé : %d collecté(s), %d inséré(s) (doublons ignorés)",
+                        len(evenements), inseres)
+            return 0
+        except Exception:
+            conn.rollback()
+            logger.exception("Échec de l'insertion — transaction annulée")
+            return 2
     finally:
         conn.close()
 
