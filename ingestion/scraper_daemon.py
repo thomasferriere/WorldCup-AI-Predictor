@@ -26,15 +26,15 @@ Toute sortie va sur stdout/stderr, redirigée vers les logs par cron.
 
 Dépendances (requirements.txt) :
     requests        # appels API REST
-    python-dotenv   # chargement de la clé RapidAPI depuis .env
+    python-dotenv   # chargement de la clé RapidAPI et des accès DB depuis .env
     feedparser      # parsing des flux RSS d'actualité
-Dépendances prévues pour la suite :
-    psycopg[binary] # driver PostgreSQL 3.x
+    psycopg2-binary # driver PostgreSQL
 """
 
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import re
@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import feedparser
+import psycopg2
 import requests
 from dotenv import load_dotenv
 
@@ -65,11 +66,13 @@ FENETRE_FIN = 9     # 09:00 (exclu)
 # ce fichier d'état mémorise la date du dernier appel pour ne pas le répéter.
 FICHIER_ETAT_API = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".derniere_date_api")
 
-# Connexion PostgreSQL (l'utilisateur scraper n'a que INSERT/SELECT, cf. schema.sql)
-PG_DSN = os.environ.get(
-    "ORACLE_PG_DSN",
-    "host=127.0.0.1 dbname=oracle2026 user=scraper",
-)
+# Cache local des matchs du jour : l'appel API n'a lieu qu'une fois par jour,
+# mais le cron repasse toutes les 5-15 min — les passages suivants relisent ce
+# fichier pour pouvoir quand même réconcilier les nouveaux articles RSS.
+FICHIER_MATCHS_JOUR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".matchs_du_jour.json")
+
+# Connexion PostgreSQL : variables DB_* chargées depuis .env (cf. .env.example).
+# L'utilisateur scraper n'a besoin que de INSERT/SELECT (cf. schema.sql).
 
 logger = logging.getLogger("oracle2026.scraper")
 
@@ -166,21 +169,19 @@ def recuperer_matchs_du_jour():
         return []
 
 
-def recuperer_contexte_match(match: dict[str, Any]) -> list[EvenementContexte]:
-    """Transforme un match renvoyé par l'API en évènements de contexte.
+def sauvegarder_matchs_caches(matchs: list[dict[str, Any]]) -> None:
+    """Mémorise les matchs du jour pour les passages cron suivants (quota oblige)."""
+    with open(FICHIER_MATCHS_JOUR, "w", encoding="utf-8") as f:
+        json.dump(matchs, f, ensure_ascii=False)
 
-    ⚠ QUOTA : avec 100 requêtes/mois, AUCUN appel API supplémentaire par match
-    (pas de /lineups, /injuries ni /odds ici). On exploite uniquement les champs
-    déjà présents dans la réponse quotidienne ; le contexte fin (blessures,
-    rumeurs) vient du volet RSS, qui est gratuit et illimité.
 
-    À implémenter :
-      - faire correspondre le match API au `matchs.id` local
-        (noms/codes des deux équipes + date de coup d'envoi) ;
-      - normaliser les champs disponibles (statut, score, horaire) en
-        EvenementContexte si pertinents.
-    """
-    raise NotImplementedError
+def charger_matchs_caches() -> list[dict[str, Any]]:
+    """Relit les matchs du jour mémorisés par le premier passage de la nuit."""
+    try:
+        with open(FICHIER_MATCHS_JOUR, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
 
 # -----------------------------------------------------------------------------
@@ -262,45 +263,159 @@ def parser_flux_rss() -> list[dict[str, Any]]:
 
 
 # -----------------------------------------------------------------------------
-# ÉTAPE 3 — Préparation et insertion PostgreSQL
+# ÉTAPE 3 — Réconciliation matchs API <-> articles RSS
+# -----------------------------------------------------------------------------
+
+# L'API renvoie les noms d'équipes en anglais, les flux RSS sont en français :
+# table de correspondance pour que le rapprochement fonctionne dans les 2 sens.
+NOMS_EQUIPES_FR = {
+    "france": "France", "brazil": "Brésil", "argentina": "Argentine",
+    "canada": "Canada", "mexico": "Mexique", "usa": "États-Unis",
+    "united states": "États-Unis", "england": "Angleterre", "spain": "Espagne",
+    "germany": "Allemagne", "portugal": "Portugal", "netherlands": "Pays-Bas",
+    "belgium": "Belgique", "croatia": "Croatie", "morocco": "Maroc",
+    "senegal": "Sénégal", "japan": "Japon", "uruguay": "Uruguay",
+    "colombia": "Colombie", "ecuador": "Équateur",
+}
+
+
+def _noms_equipes(match: dict[str, Any]) -> set[str]:
+    """Noms (en français, minuscules) des deux équipes d'un match API.
+
+    Tolérant aux variantes de schéma de l'API (home_name / home.name / home_team).
+    """
+    noms = set()
+    for cote in ("home", "away"):
+        nom = (match.get(f"{cote}_name")
+               or (match.get(cote) or {}).get("name")
+               or match.get(f"{cote}_team")
+               or "")
+        if nom:
+            noms.add(NOMS_EQUIPES_FR.get(nom.strip().lower(), nom.strip()).lower())
+    return noms
+
+
+def reconcilier_donnees(matchs_api: list[dict[str, Any]],
+                        articles_rss: list[dict[str, Any]]) -> list[EvenementContexte]:
+    """Rattache chaque article RSS aux matchs dont une équipe est citée.
+
+    Pour chaque match du jour : si le nom de l'équipe domicile ou extérieur
+    figure dans les `mots_cles` d'un article, l'article devient un
+    EvenementContexte lié à ce match. Catégorisation basique :
+      - "forfait"  -> BLESSURE_JOUEUR_MAJEUR (joueur out, impact fort)
+      - "blessure" -> BLESSURE_JOUEUR_MINEUR (gravité inconnue à ce stade)
+      - sinon      -> RUMEUR
+    (valeurs de l'ENUM type_evenement du schéma — "BLESSURE" seul n'existe pas)
+    L'impact fin est ensuite pondéré par le trigger fn_recalc_indice_risque.
+    """
+    evenements: list[EvenementContexte] = []
+
+    for match in matchs_api:
+        match_id = match.get("id") or match.get("match_id") or match.get("fixture_id")
+        if not match_id:
+            continue
+        equipes = _noms_equipes(match)
+        if not equipes:
+            continue
+
+        for article in articles_rss:
+            mots = {m.lower() for m in article.get("mots_cles", [])}
+            if not equipes & mots:
+                continue
+
+            if "forfait" in mots:
+                type_ev, impact = "BLESSURE_JOUEUR_MAJEUR", 40.0
+            elif "blessure" in mots:
+                type_ev, impact = "BLESSURE_JOUEUR_MINEUR", 25.0
+            else:
+                type_ev, impact = "RUMEUR", 10.0
+
+            evenements.append(EvenementContexte(
+                match_id=int(match_id),
+                type_evenement=type_ev,
+                joueur_nom=None,            # TODO : extraction du nom du joueur (NLP léger)
+                impact_score=impact,
+                description=f"{article['titre']} — {article['resume'][:400]}",
+                # le lien de l'article sert de clé naturelle anti-doublon
+                source=(article.get("lien") or article.get("source", ""))[:160],
+                fiabilite_source=7,         # médias sportifs mainstream
+            ))
+
+    logger.info("Réconciliation : %d évènement(s) issus de %d match(s) x %d article(s)",
+                len(evenements), len(matchs_api), len(articles_rss))
+    return evenements
+
+
+# -----------------------------------------------------------------------------
+# ÉTAPE 4 — Insertion PostgreSQL
 # -----------------------------------------------------------------------------
 
 def connecter_postgres() -> Any:
-    """Ouvre la connexion PostgreSQL (psycopg 3, autocommit désactivé).
+    """Ouvre la connexion PostgreSQL à partir des variables DB_* du .env."""
+    conn = psycopg2.connect(
+        dbname=os.getenv("DB_NAME", "oracle2026"),
+        user=os.getenv("DB_USER", "scraper"),
+        password=os.getenv("DB_PASS", ""),
+        host=os.getenv("DB_HOST", "127.0.0.1"),
+        connect_timeout=10,
+    )
+    with conn.cursor() as cur:
+        cur.execute("SET TIME ZONE 'Asia/Dubai'")   # cohérence GMT+4 (cf. schema.sql)
+    return conn
 
-    À implémenter :
-      - `psycopg.connect(PG_DSN)` ;
-      - SET TIME ZONE 'Asia/Dubai' sur la session (cohérence GMT+4) ;
-      - un échec de connexion = sortie code 2 (visible de NRPE/cron).
-    """
-    raise NotImplementedError
+
+# Insertion idempotente dans contexte_actu :
+#  - WHERE EXISTS  : ignore les évènements dont le match n'est pas (encore) en
+#    base, plutôt que de faire échouer la transaction sur une violation de FK ;
+#  - AND NOT EXISTS : déduplication NULL-safe. La contrainte uq_contexte_naturel
+#    inclut joueur_nom, or il est NULL pour les articles RSS — et en SQL deux
+#    NULL ne sont jamais "égaux", donc ON CONFLICT seul ne suffirait pas ;
+#  - ON CONFLICT DO NOTHING : filet de sécurité contre les insertions
+#    concurrentes (deux exécutions cron qui se chevauchent).
+SQL_INSERT_EVENEMENT = """
+    INSERT INTO contexte_actu
+          (match_id, equipe_id, type_evenement, joueur_nom,
+           importance_joueur, impact_score, description, source,
+           fiabilite_source, detecte_le)
+    SELECT %(match_id)s, %(equipe_id)s, %(type_evenement)s, %(joueur_nom)s,
+           %(importance_joueur)s, %(impact_score)s, %(description)s,
+           %(source)s, %(fiabilite_source)s, %(detecte_le)s
+    WHERE EXISTS (SELECT 1 FROM matchs m WHERE m.id = %(match_id)s)
+      AND NOT EXISTS (
+            SELECT 1 FROM contexte_actu c
+            WHERE c.match_id = %(match_id)s
+              AND c.type_evenement = %(type_evenement)s
+              AND c.joueur_nom IS NOT DISTINCT FROM %(joueur_nom)s
+              AND c.source     IS NOT DISTINCT FROM %(source)s
+      )
+    ON CONFLICT ON CONSTRAINT uq_contexte_naturel DO NOTHING;
+"""
 
 
 def inserer_evenements(conn: Any, evenements: list[EvenementContexte]) -> int:
-    """UPSERT idempotent des évènements dans `contexte_actu`.
+    """Écrit les évènements dans `contexte_actu` (idempotent, cf. SQL ci-dessus).
 
-    La contrainte uq_contexte_naturel (match_id, type_evenement, joueur_nom,
-    source) garantit qu'une réexécution cron ne duplique jamais une donnée —
-    et donc ne fait pas gonfler artificiellement l'indice de risque.
-
-    Requête prévue :
-
-        INSERT INTO contexte_actu
-              (match_id, equipe_id, type_evenement, joueur_nom,
-               importance_joueur, impact_score, description, source,
-               fiabilite_source, detecte_le)
-        VALUES (%(match_id)s, %(equipe_id)s, %(type_evenement)s, %(joueur_nom)s,
-                %(importance_joueur)s, %(impact_score)s, %(description)s,
-                %(source)s, %(fiabilite_source)s, %(detecte_le)s)
-        ON CONFLICT ON CONSTRAINT uq_contexte_naturel DO NOTHING;
-
-    NB : chaque INSERT réellement appliqué déclenche fn_recalc_indice_risque()
-    côté base — aucune logique métier à dupliquer ici.
-
-    Retourne le nombre de lignes effectivement insérées (cur.rowcount cumulé),
-    journalisé pour recouper avec le check NRPE de fraîcheur.
+    Chaque ligne réellement insérée déclenche fn_recalc_indice_risque() côté
+    base — aucune logique métier à dupliquer ici. Retourne le nombre de lignes
+    insérées, à recouper avec le check NRPE de fraîcheur.
     """
-    raise NotImplementedError
+    inseres = 0
+    with conn.cursor() as cur:
+        for ev in evenements:
+            cur.execute(SQL_INSERT_EVENEMENT, {
+                "match_id": ev.match_id,
+                "equipe_id": ev.equipe_id,
+                "type_evenement": ev.type_evenement,
+                "joueur_nom": ev.joueur_nom,
+                "importance_joueur": ev.importance_joueur,
+                "impact_score": ev.impact_score,
+                "description": ev.description,
+                "source": ev.source,
+                "fiabilite_source": ev.fiabilite_source,
+                "detecte_le": ev.detecte_le,
+            })
+            inseres += cur.rowcount
+    return inseres
 
 
 # -----------------------------------------------------------------------------
@@ -308,42 +423,43 @@ def inserer_evenements(conn: Any, evenements: list[EvenementContexte]) -> int:
 # -----------------------------------------------------------------------------
 
 def executer_cycle() -> int:
-    """Un cycle d'ingestion : API stats + RSS -> contexte_actu. Retourne le code de sortie."""
-    evenements: list[EvenementContexte] = []
+    """Un cycle d'ingestion : API + RSS -> réconciliation -> contexte_actu."""
 
-    # 1. API de statistiques sportives — UN appel par jour maximum (quota 100/mois)
+    # 1. Matchs du jour — UN appel API par jour maximum (quota 100/mois),
+    #    puis cache local pour les passages cron suivants de la même nuit.
+    matchs_api: list[dict[str, Any]] = []
     if api_deja_appelee_aujourdhui():
-        logger.info("Appel API quotidien déjà consommé — volet API sauté (quota préservé)")
+        matchs_api = charger_matchs_caches()
+        logger.info("Appel API quotidien déjà consommé — %d match(s) relus depuis le cache",
+                    len(matchs_api))
     else:
         try:
-            matchs = recuperer_matchs_du_jour()
+            matchs_api = recuperer_matchs_du_jour()
             marquer_api_appelee()
-            for match in matchs:
-                evenements.extend(recuperer_contexte_match(match))
-        except NotImplementedError:
-            logger.warning("Volet contexte API non implémenté — matchs récupérés mais non exploités")
+            sauvegarder_matchs_caches(matchs_api)
         except Exception:
             # Un volet en panne ne doit pas empêcher l'autre de produire des données
             logger.exception("Échec du volet API stats")
 
     # 2. Flux RSS — gratuit et illimité : c'est lui qui porte le contexte fin
+    articles: list[dict[str, Any]] = []
     try:
         articles = parser_flux_rss()
-        # TODO étape suivante : rattacher chaque article à un matchs.id via les
-        # noms d'équipes (mots_cles), le classifier (RUMEUR, BLESSURE…) et le
-        # convertir en EvenementContexte pour l'insertion ci-dessous.
-        if articles:
-            logger.info("Volet RSS : %d article(s) en attente de rattachement aux matchs",
-                        len(articles))
     except Exception:
         logger.exception("Échec du volet RSS")
 
+    # 3. Réconciliation : articles RSS rattachés aux matchs du jour
+    evenements = reconcilier_donnees(matchs_api, articles)
     if not evenements:
         logger.info("Cycle terminé : aucun évènement à insérer")
         return 0
 
-    # 3. Insertion idempotente
-    conn = connecter_postgres()
+    # 4. Insertion idempotente
+    try:
+        conn = connecter_postgres()
+    except Exception:
+        logger.exception("Connexion PostgreSQL impossible (variables DB_* du .env ?)")
+        return 2
     try:
         inseres = inserer_evenements(conn, evenements)
         conn.commit()

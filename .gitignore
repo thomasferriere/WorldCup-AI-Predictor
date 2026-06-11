@@ -5,3 +5,4 @@ logs/
 .DS_Store
 .env
 ingestion/.derniere_date_api
+ingestion/.matchs_du_jour.json
