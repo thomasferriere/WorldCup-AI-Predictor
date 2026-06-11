@@ -141,7 +141,7 @@ def recuperer_matchs_du_jour():
         print("❌ Clé API introuvable. Remplissez le fichier .env")
         return []
 
-    url = "https://free-api-live-football-data.p.rapidapi.com/soccer-fixtures-by-date"
+    url = "https://free-api-live-football-data.p.rapidapi.com/football-get-matches-by-date"
     date_aujourdhui = datetime.datetime.now().strftime("%Y%m%d")
     querystring = {"date": date_aujourdhui}
     headers = {
