@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 logs/
 .DS_Store
+.env
+ingestion/.derniere_date_api
