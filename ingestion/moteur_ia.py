@@ -58,7 +58,8 @@ logger = logging.getLogger("oracle2026.moteur_ia")
 # ÉTAPE 1 — Lecture des matchs du jour et de leur contexte
 # -----------------------------------------------------------------------------
 
-# Matchs du jour (heure session = Asia/Dubai, posée par connecter_postgres) à
+# Matchs des 48 prochaines heures (le cron de 08:30 GMT+4 doit couvrir les
+# matchs de la nuit suivante, qui tombent sur le jour calendaire suivant) à
 # venir et sans pronostic VALIDE, avec leurs évènements de contexte agrégés en
 # JSON. Un match sans contexte sort quand même (json '[]') : l'absence de
 # contexte est elle-même une information (match "lisible").
@@ -90,8 +91,8 @@ SQL_MATCHS_A_ANALYSER = """
     JOIN equipes ee ON ee.id = m.equipe_ext_id
     LEFT JOIN contexte_actu c ON c.match_id = m.id
     WHERE m.statut = 'A_VENIR'
-      AND m.coup_envoi >= date_trunc('day', now())
-      AND m.coup_envoi <  date_trunc('day', now()) + INTERVAL '1 day'
+      AND m.coup_envoi >= now()
+      AND m.coup_envoi <  now() + INTERVAL '48 hours'
       AND NOT EXISTS (
             SELECT 1 FROM pronostics_llm p
             WHERE p.match_id = m.id AND p.statut = 'VALIDE'
@@ -102,11 +103,11 @@ SQL_MATCHS_A_ANALYSER = """
 
 
 def recuperer_matchs_a_analyser(conn: Any) -> list[dict[str, Any]]:
-    """Matchs du jour à pronostiquer, chacun avec ses évènements de contexte."""
+    """Matchs des 48 prochaines heures, chacun avec ses évènements de contexte."""
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(SQL_MATCHS_A_ANALYSER)
         matchs = [dict(ligne) for ligne in cur.fetchall()]
-    logger.info("%d match(s) du jour en attente de pronostic", len(matchs))
+    logger.info("%d match(s) en attente de pronostic", len(matchs))
     return matchs
 
 
