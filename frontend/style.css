@@ -1,0 +1,290 @@
+/* =============================================================================
+   ORACLE 2026 — Design System "Liquid Glass" (Glassmorphism)
+   CSS pur, sans framework. Cœur de l'effet :
+     - backdrop-filter: blur() saturate()  → le verre dépoli
+     - background: rgba(...)                → translucidité
+     - box-shadow (externe + inset)         → profondeur + reflet liquide
+     - border rgba claire                   → arête de verre
+   ============================================================================= */
+
+/* ----------------------- Variables de thème ----------------------- */
+:root {
+    --glass-bg:        rgba(255, 255, 255, 0.10);
+    --glass-bg-strong: rgba(255, 255, 255, 0.16);
+    --glass-border:    rgba(255, 255, 255, 0.35);
+    --glass-blur:      22px;
+    --glass-shadow:    0 8px 32px rgba(0, 0, 0, 0.28);
+    --glass-inset:     inset 0 1px 1px rgba(255, 255, 255, 0.45),
+                       inset 0 -1px 1px rgba(255, 255, 255, 0.08);
+
+    --txt:        #f4f6ff;
+    --txt-soft:   rgba(244, 246, 255, 0.72);
+
+    --risk-low:   #43e0a0;
+    --risk-mid:   #ffcf5c;
+    --risk-high:  #ff6b81;
+
+    --radius:     22px;
+    --radius-sm:  14px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    color: var(--txt);
+    min-height: 100vh;
+    overflow-x: hidden;
+    /* dégradé profond de base, sous les blobs */
+    background: radial-gradient(1200px 800px at 80% -10%, #3a2b8f 0%, transparent 55%),
+                radial-gradient(900px 700px at -10% 110%, #0d6e8c 0%, transparent 60%),
+                linear-gradient(160deg, #0b1026 0%, #131a3a 50%, #1a1140 100%);
+}
+
+/* ----------------------- Arrière-plan complexe ----------------------- */
+/* Des "blobs" colorés floutés donnent au verre quelque chose de riche à
+   réfracter — c'est ce qui fait vivre l'effet liquid glass. */
+.bg-scene {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    overflow: hidden;
+    filter: saturate(1.2);
+}
+
+.blob {
+    position: absolute;
+    width: 46vmax;
+    height: 46vmax;
+    border-radius: 50%;
+    filter: blur(60px);
+    opacity: 0.75;
+    mix-blend-mode: screen;
+    animation: drift 22s ease-in-out infinite alternate;
+}
+.blob--1 { background: #ff4d8d; top: -12%; left: -8%; animation-delay: 0s; }
+.blob--2 { background: #4d7bff; bottom: -18%; right: -10%; animation-delay: -6s; }
+.blob--3 { background: #2bd9c4; top: 30%; left: 45%; width: 34vmax; height: 34vmax; animation-delay: -12s; }
+
+.bg-grain {
+    position: absolute;
+    inset: 0;
+    opacity: 0.05;
+    /* léger grain pour casser les aplats du dégradé */
+    background-image: radial-gradient(rgba(255,255,255,0.6) 0.5px, transparent 0.5px);
+    background-size: 3px 3px;
+}
+
+@keyframes drift {
+    0%   { transform: translate(0, 0) scale(1); }
+    50%  { transform: translate(4%, -6%) scale(1.12); }
+    100% { transform: translate(-5%, 5%) scale(0.95); }
+}
+
+/* ----------------------- Layout ----------------------- */
+.layout {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 32px 24px 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+/* =====================================================================
+   CLASSE MAÎTRESSE : .glass — la surface de verre liquide réutilisable
+   ===================================================================== */
+.glass {
+    position: relative;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(170%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(170%);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    box-shadow: var(--glass-shadow), var(--glass-inset);
+}
+
+/* Reflet "liquide" : un highlight diagonal superposé via pseudo-élément */
+.glass::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(130deg,
+                rgba(255, 255, 255, 0.25) 0%,
+                rgba(255, 255, 255, 0.05) 28%,
+                transparent 55%);
+    pointer-events: none;
+}
+
+/* Variante encastrée (chips, horloge, pronostic) */
+.glass-inset {
+    background: rgba(255, 255, 255, 0.07);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+                inset 0 1px 1px rgba(255, 255, 255, 0.25);
+}
+
+/* ----------------------- Topbar ----------------------- */
+.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px;
+}
+.brand { display: flex; align-items: center; gap: 14px; }
+.brand__logo {
+    font-size: 30px;
+    display: grid;
+    place-items: center;
+    width: 52px; height: 52px;
+    border-radius: 16px;
+    background: rgba(255,255,255,0.12);
+    box-shadow: var(--glass-inset);
+}
+.brand h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+.brand__sub { font-size: 12.5px; color: var(--txt-soft); }
+
+.clock { padding: 8px 16px; text-align: right; line-height: 1.2; }
+.clock__label { display: block; font-size: 10.5px; color: var(--txt-soft); letter-spacing: 1px; text-transform: uppercase; }
+.clock__time { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ----------------------- KPIs ----------------------- */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+}
+.card { padding: 20px; }
+.kpi { display: flex; flex-direction: column; gap: 6px; }
+.kpi__icon  { font-size: 22px; }
+.kpi__value { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+.kpi__label { font-size: 12.5px; color: var(--txt-soft); }
+.kpi--alert { border-color: rgba(255, 107, 129, 0.5); }
+.kpi--alert .kpi__value { color: var(--risk-high); }
+
+/* ----------------------- Section ----------------------- */
+.section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+.section-head h2 { font-size: 18px; font-weight: 700; }
+.pill { padding: 6px 14px; font-size: 12.5px; color: var(--txt-soft); }
+
+.matches { display: flex; flex-direction: column; gap: 18px; }
+
+/* ----------------------- Carte match ----------------------- */
+.match {
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+.match:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.4), var(--glass-inset);
+}
+
+.match__teams {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 12px;
+}
+.team { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 17px; }
+.team--right { justify-content: flex-end; }
+.team__flag { font-size: 26px; }
+.match__vs {
+    font-size: 14px; font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.10);
+    box-shadow: var(--glass-inset);
+    font-variant-numeric: tabular-nums;
+}
+.match__meta { font-size: 12.5px; color: var(--txt-soft); text-align: center; }
+
+/* ----------------------- Indice de risque ----------------------- */
+.risk { display: flex; flex-direction: column; gap: 8px; }
+.risk__head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 13px; color: var(--txt-soft);
+}
+.risk__num { font-size: 20px; font-weight: 800; }
+.risk__num--low  { color: var(--risk-low); }
+.risk__num--mid  { color: var(--risk-mid); }
+.risk__num--high { color: var(--risk-high); }
+
+.risk__bar {
+    position: relative;
+    height: 12px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.30);
+    overflow: hidden;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+}
+/* remplissage "liquide" piloté par la variable --risk */
+.risk__fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--risk, 0%);
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--risk-low), var(--risk-mid) 55%, var(--risk-high));
+    box-shadow: 0 0 16px rgba(255, 207, 92, 0.45);
+    animation: shimmer 3s linear infinite;
+    background-size: 200% 100%;
+}
+@keyframes shimmer {
+    0% { background-position: 0% 0; }
+    100% { background-position: 200% 0; }
+}
+.risk__reason { font-size: 12px; color: var(--txt-soft); }
+
+/* ----------------------- Pronostic LLM ----------------------- */
+.prono {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+}
+.prono__tag { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--txt-soft); }
+.prono__pick { font-size: 16px; font-weight: 800; margin-left: auto; }
+.prono__state {
+    font-size: 11.5px; font-weight: 700;
+    padding: 4px 10px; border-radius: 999px;
+    background: rgba(255, 107, 129, 0.18);
+    color: var(--risk-high);
+    border: 1px solid rgba(255, 107, 129, 0.4);
+}
+.prono__state--ok {
+    background: rgba(67, 224, 160, 0.16);
+    color: var(--risk-low);
+    border-color: rgba(67, 224, 160, 0.4);
+}
+.prono--obsolete { opacity: 0.92; }
+
+/* ----------------------- Footer ----------------------- */
+.footer {
+    text-align: center;
+    font-size: 12px;
+    color: var(--txt-soft);
+    padding-top: 8px;
+}
+
+/* ----------------------- Responsive ----------------------- */
+@media (max-width: 760px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .brand h1 { font-size: 19px; }
+}
+@media (max-width: 440px) {
+    .team__name { display: none; }     /* on garde les drapeaux sur petit écran */
+    .kpi__value { font-size: 22px; }
+}

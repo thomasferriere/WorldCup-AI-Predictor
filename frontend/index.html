@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Oracle 2026 — Dashboard Pronostics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <!-- Arrière-plan complexe : dégradé + blobs colorés animés derrière le verre -->
+    <div class="bg-scene" aria-hidden="true">
+        <span class="blob blob--1"></span>
+        <span class="blob blob--2"></span>
+        <span class="blob blob--3"></span>
+        <span class="bg-grain"></span>
+    </div>
+
+    <div class="layout">
+        <!-- ====================== EN-TÊTE ====================== -->
+        <header class="glass topbar">
+            <div class="brand">
+                <span class="brand__logo">⚽</span>
+                <div>
+                    <h1>Oracle 2026</h1>
+                    <p class="brand__sub">Pronostics automatisés · Coupe du Monde</p>
+                </div>
+            </div>
+            <div class="clock glass-inset">
+                <span class="clock__label">Serveur GMT+4</span>
+                <span class="clock__time" id="serverClock">04:12</span>
+            </div>
+        </header>
+
+        <!-- ====================== KPIs ====================== -->
+        <section class="kpi-grid" aria-label="Indicateurs clés">
+            <article class="glass card kpi">
+                <span class="kpi__icon">📡</span>
+                <span class="kpi__value">3 / 3</span>
+                <span class="kpi__label">Daemons actifs</span>
+            </article>
+            <article class="glass card kpi">
+                <span class="kpi__icon">🌙</span>
+                <span class="kpi__value">128</span>
+                <span class="kpi__label">Évènements cette nuit</span>
+            </article>
+            <article class="glass card kpi">
+                <span class="kpi__icon">🎯</span>
+                <span class="kpi__value">71%</span>
+                <span class="kpi__label">Confiance moyenne</span>
+            </article>
+            <article class="glass card kpi kpi--alert">
+                <span class="kpi__icon">⚠️</span>
+                <span class="kpi__value">2</span>
+                <span class="kpi__label">Pronostics périmés</span>
+            </article>
+        </section>
+
+        <!-- ====================== MATCHS DU JOUR ====================== -->
+        <section class="matches" aria-label="Matchs du jour">
+            <div class="section-head">
+                <h2>Matchs de la nuit</h2>
+                <span class="pill glass-inset">15 juin 2026</span>
+            </div>
+
+            <!-- Carte match : translucide, superposée, indice de risque -->
+            <article class="glass card match">
+                <div class="match__teams">
+                    <div class="team">
+                        <span class="team__flag">🇫🇷</span>
+                        <span class="team__name">France</span>
+                    </div>
+                    <span class="match__vs">04:00</span>
+                    <div class="team team--right">
+                        <span class="team__name">Canada</span>
+                        <span class="team__flag">🇨🇦</span>
+                    </div>
+                </div>
+
+                <div class="match__meta">BMO Field · Toronto · Phase de groupes</div>
+
+                <!-- Indice de risque : barre liquide -->
+                <div class="risk">
+                    <div class="risk__head">
+                        <span>Indice de risque</span>
+                        <span class="risk__num risk__num--high">78</span>
+                    </div>
+                    <div class="risk__bar">
+                        <span class="risk__fill" style="--risk: 78%;"></span>
+                    </div>
+                    <p class="risk__reason">💥 Blessure majeure détectée — pronostic en recalcul</p>
+                </div>
+
+                <!-- Pronostic LLM -->
+                <div class="prono glass-inset prono--obsolete">
+                    <span class="prono__tag">Pronostic LLM</span>
+                    <span class="prono__pick">1 · 2-0</span>
+                    <span class="prono__state">OBSOLÈTE</span>
+                </div>
+            </article>
+
+            <article class="glass card match">
+                <div class="match__teams">
+                    <div class="team">
+                        <span class="team__flag">🇧🇷</span>
+                        <span class="team__name">Brésil</span>
+                    </div>
+                    <span class="match__vs">06:30</span>
+                    <div class="team team--right">
+                        <span class="team__name">Mexique</span>
+                        <span class="team__flag">🇲🇽</span>
+                    </div>
+                </div>
+
+                <div class="match__meta">Estadio Azteca · Mexico · Phase de groupes</div>
+
+                <div class="risk">
+                    <div class="risk__head">
+                        <span>Indice de risque</span>
+                        <span class="risk__num risk__num--mid">44</span>
+                    </div>
+                    <div class="risk__bar">
+                        <span class="risk__fill" style="--risk: 44%;"></span>
+                    </div>
+                    <p class="risk__reason">Contexte stable · compositions confirmées</p>
+                </div>
+
+                <div class="prono glass-inset">
+                    <span class="prono__tag">Pronostic LLM</span>
+                    <span class="prono__pick">2 · 1-2</span>
+                    <span class="prono__state prono__state--ok">VALIDE · 0.69</span>
+                </div>
+            </article>
+
+            <article class="glass card match">
+                <div class="match__teams">
+                    <div class="team">
+                        <span class="team__flag">🇦🇷</span>
+                        <span class="team__name">Argentine</span>
+                    </div>
+                    <span class="match__vs">08:00</span>
+                    <div class="team team--right">
+                        <span class="team__name">USA</span>
+                        <span class="team__flag">🇺🇸</span>
+                    </div>
+                </div>
+
+                <div class="match__meta">MetLife Stadium · New Jersey · Phase de groupes</div>
+
+                <div class="risk">
+                    <div class="risk__head">
+                        <span>Indice de risque</span>
+                        <span class="risk__num risk__num--low">19</span>
+                    </div>
+                    <div class="risk__bar">
+                        <span class="risk__fill" style="--risk: 19%;"></span>
+                    </div>
+                    <p class="risk__reason">Écart de niveau marqué · faible incertitude</p>
+                </div>
+
+                <div class="prono glass-inset">
+                    <span class="prono__tag">Pronostic LLM</span>
+                    <span class="prono__pick">1 · 3-1</span>
+                    <span class="prono__state prono__state--ok">VALIDE · 0.82</span>
+                </div>
+            </article>
+        </section>
+
+        <footer class="footer">
+            Oracle 2026 · pipeline supervisé par Nagios/NRPE · données indicatives
+        </footer>
+    </div>
+
+    <script>
+        // Petite horloge GMT+4 (purement décorative, aucune dépendance)
+        function tick() {
+            const now = new Date();
+            const gmt4 = new Date(now.getTime() + (now.getTimezoneOffset() + 240) * 60000);
+            const hh = String(gmt4.getHours()).padStart(2, '0');
+            const mm = String(gmt4.getMinutes()).padStart(2, '0');
+            document.getElementById('serverClock').textContent = `${hh}:${mm}`;
+        }
+        tick();
+        setInterval(tick, 1000);
+    </script>
+</body>
+</html>
