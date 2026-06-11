@@ -184,5 +184,133 @@
         tick();
         setInterval(tick, 1000);
     </script>
+
+    <script>
+        // ==================================================================
+        // Connexion au backend : remplace les cartes statiques de la maquette
+        // par les vraies données (serveur_api.py — FastAPI, port 8000).
+        // Si l'API est injoignable, la maquette statique reste affichée.
+        // ==================================================================
+        const API_URL = 'http://localhost:8000/api/matchs_du_jour';
+
+        const DRAPEAUX = {
+            'France': '🇫🇷', 'Brésil': '🇧🇷', 'Argentine': '🇦🇷', 'Canada': '🇨🇦',
+            'Mexique': '🇲🇽', 'États-Unis': '🇺🇸', 'Angleterre': '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 'Espagne': '🇪🇸',
+            'Allemagne': '🇩🇪', 'Portugal': '🇵🇹', 'Pays-Bas': '🇳🇱', 'Belgique': '🇧🇪',
+            'Croatie': '🇭🇷', 'Maroc': '🇲🇦', 'Sénégal': '🇸🇳', 'Japon': '🇯🇵',
+            'Uruguay': '🇺🇾', 'Colombie': '🇨🇴', 'Équateur': '🇪🇨',
+            'Afrique du Sud': '🇿🇦', 'Corée du Sud': '🇰🇷', 'Tchéquie': '🇨🇿',
+            'Autriche': '🇦🇹', 'Nigéria': '🇳🇬', 'Guatemala': '🇬🇹',
+        };
+
+        // Les textes (noms, descriptions issues du scraping) passent par ici
+        // avant injection dans le HTML.
+        function esc(s) {
+            const div = document.createElement('div');
+            div.textContent = s ?? '';
+            return div.innerHTML;
+        }
+
+        function classeRisque(indice) {
+            return indice < 34 ? 'low' : indice < 67 ? 'mid' : 'high';
+        }
+
+        function heureServeur(iso) {
+            return new Intl.DateTimeFormat('fr-FR', {
+                hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Dubai',
+            }).format(new Date(iso));
+        }
+
+        function blocPronostic(m) {
+            if (!m.issue) {
+                return `<div class="prono glass-inset">
+                    <span class="prono__tag">Pronostic LLM</span>
+                    <span class="prono__pick">—</span>
+                    <span class="prono__state">EN ATTENTE</span>
+                </div>`;
+            }
+            const obsolete = m.statut_pronostic === 'OBSOLETE';
+            const etat = obsolete
+                ? '<span class="prono__state">OBSOLÈTE</span>'
+                : `<span class="prono__state prono__state--ok">VALIDE · ${Number(m.confiance).toFixed(2)}</span>`;
+            return `<div class="prono glass-inset${obsolete ? ' prono--obsolete' : ''}">
+                <span class="prono__tag">Pronostic LLM</span>
+                <span class="prono__pick">${esc(m.issue)} · ${esc(m.score_estime ?? '?')}</span>
+                ${etat}
+            </div>`;
+        }
+
+        function carteMatch(m) {
+            const indice = Math.round(Number(m.indice_risque));
+            const niveau = classeRisque(indice);
+            const enCours = m.statut === 'EN_COURS';
+            const centre = enCours
+                ? `${m.score_dom ?? 0}-${m.score_ext ?? 0}`
+                : heureServeur(m.coup_envoi);
+            const meta = [m.stade, m.ville, m.phase].filter(Boolean).map(esc).join(' · ');
+            const raison = m.dernier_evenement
+                ? esc(m.dernier_evenement.slice(0, 110))
+                : 'Contexte stable · aucun évènement détecté';
+
+            return `<article class="glass card match">
+                <div class="match__teams">
+                    <div class="team">
+                        <span class="team__flag">${DRAPEAUX[m.equipe_dom] ?? '⚽'}</span>
+                        <span class="team__name">${esc(m.equipe_dom)}</span>
+                    </div>
+                    <span class="match__vs">${enCours ? 'LIVE ' : ''}${centre}</span>
+                    <div class="team team--right">
+                        <span class="team__name">${esc(m.equipe_ext)}</span>
+                        <span class="team__flag">${DRAPEAUX[m.equipe_ext] ?? '⚽'}</span>
+                    </div>
+                </div>
+                <div class="match__meta">${meta}</div>
+                <div class="risk">
+                    <div class="risk__head">
+                        <span>Indice de risque</span>
+                        <span class="risk__num risk__num--${niveau}">${indice}</span>
+                    </div>
+                    <div class="risk__bar">
+                        <span class="risk__fill" style="--risk: ${indice}%;"></span>
+                    </div>
+                    <p class="risk__reason">${raison}</p>
+                </div>
+                ${blocPronostic(m)}
+            </article>`;
+        }
+
+        async function chargerMatchs() {
+            let data;
+            try {
+                const reponse = await fetch(API_URL);
+                if (!reponse.ok) throw new Error(`HTTP ${reponse.status}`);
+                data = await reponse.json();
+            } catch (err) {
+                console.warn('API Oracle 2026 injoignable, maquette statique conservée :', err);
+                return;
+            }
+
+            const section = document.querySelector('.matches');
+            section.querySelectorAll('.match').forEach(el => el.remove());
+
+            const pill = section.querySelector('.pill');
+            if (pill) {
+                pill.textContent = new Intl.DateTimeFormat('fr-FR', {
+                    day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Dubai',
+                }).format(new Date());
+            }
+
+            if (!data.matchs.length) {
+                section.insertAdjacentHTML('beforeend',
+                    '<article class="glass card match"><div class="match__meta">Aucun match dans la fenêtre courante.</div></article>');
+                return;
+            }
+            for (const m of data.matchs) {
+                section.insertAdjacentHTML('beforeend', carteMatch(m));
+            }
+        }
+
+        chargerMatchs();
+    </script>
 </body>
 </html>

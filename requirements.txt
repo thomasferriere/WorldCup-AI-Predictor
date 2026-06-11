@@ -2,3 +2,5 @@ requests
 python-dotenv
 feedparser
 psycopg2-binary
+fastapi
+uvicorn
