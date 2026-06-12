@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "dashboard",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8080", "--directory", "frontend"],
-      "port": 8080
+      "runtimeExecutable": ".venv/bin/uvicorn",
+      "runtimeArgs": ["serveur_api:app", "--port", "8000"],
+      "port": 8000
     }
   ]
 }

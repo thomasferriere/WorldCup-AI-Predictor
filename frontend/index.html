@@ -6,7 +6,7 @@
     <title>Oracle 2026 — Dashboard Pronostics</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="style.css?v=2.1" />
+    <link rel="stylesheet" href="/frontend/style.css?v=2.2" />
 </head>
 <body>
     <!-- Arrière-plan complexe : dégradé + blobs colorés animés derrière le verre -->
@@ -196,9 +196,11 @@
         // par les vraies données (serveur_api.py — FastAPI, port 8000).
         // Si l'API est injoignable, la maquette statique reste affichée.
         // ==================================================================
-        const API_BASE = 'http://localhost:8000';
-        const API_URL = `${API_BASE}/api/matchs_du_jour`;
-        const KPI_URL = `${API_BASE}/api/kpis`;
+        // URLs relatives : la page et l'API partagent la même origine (FastAPI
+        // sert les deux). Indispensable pour l'accès distant via tunnel — un
+        // localhost codé en dur pointerait vers le téléphone, pas vers le Mac.
+        const API_URL = '/api/matchs_du_jour';
+        const KPI_URL = '/api/kpis';
 
         const DRAPEAUX = {
             'France': '🇫🇷', 'Brésil': '🇧🇷', 'Argentine': '🇦🇷', 'Canada': '🇨🇦',

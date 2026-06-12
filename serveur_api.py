@@ -24,9 +24,12 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 # Réutilise la connexion (variables DB_* du .env) définie côté ingestion
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ingestion"))
+RACINE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(RACINE, "ingestion"))
 from scraper_daemon import connecter_postgres  # noqa: E402
 
 load_dotenv()
@@ -42,6 +45,20 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Frontend servi par la même application : indispensable pour l'accès distant
+# (tunnel/téléphone), où file:// est impossible et où l'API doit être jointe
+# sur la même origine que la page (URLs relatives côté JS).
+# ---------------------------------------------------------------------------
+
+app.mount("/frontend", StaticFiles(directory=os.path.join(RACINE, "frontend")), name="frontend")
+
+
+@app.get("/", include_in_schema=False)
+def accueil() -> FileResponse:
+    """Le dashboard glassmorphism, servi à la racine."""
+    return FileResponse(os.path.join(RACINE, "frontend", "index.html"))
 
 # Trois vues sur la même requête : fenêtre courante (jour), matchs joués
 # (historique), slots du calendrier complet (calendrier). Les fragments SQL
