@@ -193,6 +193,13 @@ BEGIN
            updated_at    = now()
      WHERE id = v_match_id;
 
+    -- Match en cours de suppression (DELETE en cascade depuis matchs) :
+    -- rien à recalculer ni à journaliser, sous peine de violer la FK de
+    -- journal_risque vers un match qui n'existe plus.
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+
     -- 6) Traçabilité
     v_declencheur := COALESCE(NEW.type_evenement::TEXT, 'SUPPRESSION_CONTEXTE')
                      || COALESCE(' / ' || NEW.joueur_nom, '');

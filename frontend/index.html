@@ -6,7 +6,7 @@
     <title>Oracle 2026 — Dashboard Pronostics</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="style.css?v=2.1" />
 </head>
 <body>
     <!-- Arrière-plan complexe : dégradé + blobs colorés animés derrière le verre -->
@@ -236,13 +236,22 @@
         }
 
         // Verdict a posteriori : le pronostic 1/N/2 était-il le bon ?
+        // Uniquement sur match TERMINE — un score en cours ne juge rien.
         function verdictPronostic(m) {
-            if (!m.issue || m.score_dom == null || m.score_ext == null) return '';
+            if (m.statut !== 'TERMINE' || !m.issue
+                || m.score_dom == null || m.score_ext == null) return '';
             const reel = m.score_dom > m.score_ext ? '1'
                        : m.score_dom < m.score_ext ? '2' : 'N';
             const ok = reel === m.issue;
             return `<span class="verdict ${ok ? 'verdict--ok' : 'verdict--ko'}">
                 ${ok ? 'Pronostic ✓' : 'Pronostic ✗'}</span>`;
+        }
+
+        // Issue 1/N/2 -> texte explicite, lisible sans connaître la convention
+        function libelleIssue(m) {
+            if (m.issue === '1') return `Victoire ${m.equipe_dom}`;
+            if (m.issue === '2') return `Victoire ${m.equipe_ext}`;
+            return 'Match nul';
         }
 
         function blocPronostic(m) {
@@ -261,9 +270,11 @@
             const etat = obsolete
                 ? '<span class="prono__state">OBSOLÈTE</span>'
                 : `<span class="prono__state prono__state--ok">VALIDE · ${Number(m.confiance).toFixed(2)}</span>`;
+            const pick = esc(libelleIssue(m)) +
+                (m.score_estime ? ` (${esc(m.score_estime)})` : '');
             return `<div class="prono glass-inset${obsolete ? ' prono--obsolete' : ''}">
                 <span class="prono__tag">Pronostic LLM</span>
-                <span class="prono__pick">${esc(m.issue)} · ${esc(m.score_estime ?? '?')}</span>
+                <span class="prono__pick">${pick}</span>
                 ${etat}
                 ${badgeSignal}
             </div>`;
@@ -314,7 +325,7 @@
                 ? esc(m.dernier_evenement.slice(0, 110))
                 : 'Contexte stable · aucun évènement détecté';
 
-            return `<article class="glass card match">
+            return `<article class="glass card match${termine ? ' match--termine' : ''}">
                 ${enteteEquipes(m, centre)}
                 <div class="match__meta">${meta}</div>
                 <div class="risk">

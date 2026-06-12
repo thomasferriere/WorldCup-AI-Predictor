@@ -370,3 +370,9 @@ body {
     color: var(--risk-high);
     border-color: rgba(255, 107, 129, 0.4);
 }
+
+/* ----------------------- V2.1 : matchs terminés grisés ------------- */
+.match--termine {
+    opacity: 0.6;
+    filter: grayscale(0.35);
+}

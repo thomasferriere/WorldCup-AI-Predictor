@@ -47,10 +47,10 @@ app.add_middleware(
 # (historique), slots du calendrier complet (calendrier). Les fragments SQL
 # sont choisis dans CE dictionnaire — jamais depuis l'entrée utilisateur.
 FILTRES = {
+    # Vue principale : TOUS les vrais matchs (programmés, en cours, terminés)
+    # pour pouvoir faire défiler passé et avenir de la compétition.
     "jour": (
-        """WHERE m.statut <> 'EN_ATTENTE'
-             AND m.coup_envoi >= now() - INTERVAL '12 hours'
-             AND m.coup_envoi <  now() + INTERVAL '48 hours'""",
+        "WHERE m.statut <> 'EN_ATTENTE'",
         "ORDER BY m.coup_envoi",
     ),
     "historique": (
