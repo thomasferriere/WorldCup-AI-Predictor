@@ -86,6 +86,50 @@ SQL_MATCHS_DU_JOUR = """
 """
 
 
+# KPIs du bandeau : tous calculés sur la même fenêtre que /api/matchs_du_jour
+# pour que les chiffres du haut correspondent aux cartes affichées en dessous.
+SQL_KPIS = """
+    WITH fenetre AS (
+        SELECT id FROM matchs
+        WHERE coup_envoi >= now() - INTERVAL '12 hours'
+          AND coup_envoi <  now() + INTERVAL '48 hours'
+    )
+    SELECT
+        (SELECT count(*) FROM contexte_actu
+          WHERE match_id IN (SELECT id FROM fenetre))         AS evenements_nuit,
+        (SELECT round(avg(confiance) * 100)
+           FROM pronostics_llm
+          WHERE statut = 'VALIDE'
+            AND match_id IN (SELECT id FROM fenetre))         AS confiance_moyenne,
+        (SELECT count(*) FROM pronostics_llm
+          WHERE statut = 'OBSOLETE'
+            AND match_id IN (SELECT id FROM fenetre))         AS pronostics_perimes;
+"""
+
+
+@app.get("/api/kpis")
+def kpis() -> dict:
+    """Indicateurs du bandeau : daemons, évènements, confiance moyenne, périmés."""
+    try:
+        conn = connecter_postgres()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Base de données injoignable : {exc}")
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(SQL_KPIS)
+            ligne = dict(cur.fetchone())
+        return {
+            # Statique pour l'instant : reflètera l'état réel des 3 volets
+            # (API, RSS, IA) quand un heartbeat sera stocké en base.
+            "daemons_actifs": "3/3",
+            "evenements_nuit": ligne["evenements_nuit"],
+            "confiance_moyenne": ligne["confiance_moyenne"],   # null si aucun VALIDE
+            "pronostics_perimes": ligne["pronostics_perimes"],
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/matchs_du_jour")
 def matchs_du_jour() -> dict:
     """Matchs du jour avec indice de risque, statut et dernier pronostic LLM."""

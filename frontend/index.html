@@ -191,7 +191,9 @@
         // par les vraies données (serveur_api.py — FastAPI, port 8000).
         // Si l'API est injoignable, la maquette statique reste affichée.
         // ==================================================================
-        const API_URL = 'http://localhost:8000/api/matchs_du_jour';
+        const API_BASE = 'http://localhost:8000';
+        const API_URL = `${API_BASE}/api/matchs_du_jour`;
+        const KPI_URL = `${API_BASE}/api/kpis`;
 
         const DRAPEAUX = {
             'France': '🇫🇷', 'Brésil': '🇧🇷', 'Argentine': '🇦🇷', 'Canada': '🇨🇦',
@@ -310,7 +312,29 @@
             }
         }
 
+        // Met à jour les 4 blocs du bandeau (dans l'ordre du HTML : daemons,
+        // évènements, confiance moyenne, pronostics périmés).
+        async function chargerKpis() {
+            let kpis;
+            try {
+                const reponse = await fetch(KPI_URL);
+                if (!reponse.ok) throw new Error(`HTTP ${reponse.status}`);
+                kpis = await reponse.json();
+            } catch (err) {
+                console.warn('KPIs indisponibles, valeurs statiques conservées :', err);
+                return;
+            }
+            const valeurs = document.querySelectorAll('.kpi-grid .kpi .kpi__value');
+            if (valeurs.length < 4) return;
+            valeurs[0].textContent = kpis.daemons_actifs;
+            valeurs[1].textContent = kpis.evenements_nuit;
+            valeurs[2].textContent = kpis.confiance_moyenne != null
+                ? `${Math.round(Number(kpis.confiance_moyenne))}%` : '—';
+            valeurs[3].textContent = kpis.pronostics_perimes;
+        }
+
         chargerMatchs();
+        chargerKpis();
     </script>
 </body>
 </html>
