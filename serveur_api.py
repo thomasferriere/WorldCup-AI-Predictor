@@ -17,24 +17,83 @@ Route :
                                 évènement de contexte.
 """
 
+import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import psycopg2.extras
+from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-# Réutilise la connexion (variables DB_* du .env) définie côté ingestion
+# Réutilise la connexion (variables DB_* du .env) définie côté ingestion.
+# NB : import direct des modules (pas ingestion.xxx) pour rester cohérent —
+# deux styles d'import créeraient deux instances des mêmes modules.
 RACINE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(RACINE, "ingestion"))
-from scraper_daemon import connecter_postgres  # noqa: E402
+from moteur_ia import main as run_ia            # noqa: E402
+from scraper_daemon import connecter_postgres   # noqa: E402
+from scraper_daemon import main as run_scraper  # noqa: E402
 
 load_dotenv()
 
-app = FastAPI(title="Oracle 2026 — API dashboard", version="0.1.0")
+logger = logging.getLogger("oracle2026.serveur")
+
+
+# ---------------------------------------------------------------------------
+# Travailleurs en arrière-plan (APScheduler) : plus de lancement manuel.
+# Chaque tâche est blindée — une exception ne tue ni le scheduler ni l'API.
+# ---------------------------------------------------------------------------
+
+def tache_ingestion() -> None:
+    """Cycle scraper (API quotidienne + RSS + réconciliation + insertion).
+
+    Hors fenêtre nocturne 01h-09h GMT+4, run_scraper sort immédiatement ;
+    le garde-fou quota limite de toute façon l'API à 1 appel/jour.
+    """
+    try:
+        code = run_scraper([])   # argv vide = respecte la fenêtre nocturne
+        logger.info("Tâche ingestion terminée (code %s)", code)
+    except Exception:
+        logger.exception("Tâche ingestion en échec")
+
+
+def tache_moteur_ia() -> None:
+    """Pronostics llama3 pour les matchs que la base a (in)validés."""
+    try:
+        code = run_ia()
+        logger.info("Tâche moteur IA terminée (code %s)", code)
+    except Exception:
+        logger.exception("Tâche moteur IA en échec")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Rend visibles les logs des tâches de fond (oracle2026.* et apscheduler)
+    # dans la sortie uvicorn, sans toucher aux loggers propres d'uvicorn.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s : %(message)s",
+    )
+    planificateur = BackgroundScheduler(timezone="Asia/Dubai")
+    # max_instances=1 : un cycle encore en cours n'est jamais doublé ;
+    # coalesce : les exécutions manquées (machine en veille) sont fusionnées.
+    planificateur.add_job(tache_ingestion, "interval", minutes=60,
+                          id="ingestion", coalesce=True, max_instances=1)
+    # 65 min (et non 60) : laisse au scraper le temps de finir avant l'IA
+    planificateur.add_job(tache_moteur_ia, "interval", minutes=65,
+                          id="moteur_ia", coalesce=True, max_instances=1)
+    planificateur.start()
+    logger.info("Planificateur démarré : ingestion / 60 min, moteur IA / 65 min")
+    yield
+    planificateur.shutdown(wait=False)
+
+
+app = FastAPI(title="Oracle 2026 — API dashboard", version="0.2.0", lifespan=lifespan)
 
 # CORS : le dashboard est ouvert en local (file:// ou petit serveur statique),
 # donc origine imprévisible -> tout autoriser, en lecture seule (GET).

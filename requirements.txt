@@ -4,3 +4,4 @@ feedparser
 psycopg2-binary
 fastapi
 uvicorn
+apscheduler
