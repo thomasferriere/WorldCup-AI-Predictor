@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Oracle 2026 — LaunchAgent macOS (service 24/7)
+
+  Démarre le serveur unifié (frontend + API + APScheduler) au login et le
+  relance automatiquement s'il tombe. launchd ne développe PAS les variables
+  d'environnement : tous les chemins sont absolus.
+
+  Installation :  cp com.thomas.oracle2026.plist ~/Library/LaunchAgents/
+                  launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+  Arrêt :         launchctl unload ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.thomas.oracle2026</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/thomasferriere/CDM/.venv/bin/uvicorn</string>
+        <string>serveur_api:app</string>
+        <string>--port</string>
+        <string>8000</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/thomasferriere/CDM</string>
+
+    <!-- Démarre au chargement et redémarre en cas de crash -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Logs uvicorn + tâches de fond (dossier logs/ ignoré par Git) -->
+    <key>StandardOutPath</key>
+    <string>/Users/thomasferriere/CDM/logs/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/thomasferriere/CDM/logs/server.log</string>
+</dict>
+</plist>

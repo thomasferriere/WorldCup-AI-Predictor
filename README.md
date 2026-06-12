@@ -22,7 +22,7 @@ Cette première phase ne contient **pas** le LLM décisionnel : elle livre la **
                        macOS host — fuseau serveur : GMT+4
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                                                                            │
-│   ⏱  CRON / launchd (fenêtre nocturne 01:00 → 09:00 GMT+4)                 │
+│   ⏱  APScheduler embarqué dans FastAPI (fenêtre nocturne 01:00 → 09:00)    │
 │        │                                                                   │
 │        ▼                                                                   │
 │   ┌─────────────────────┐     scraping     ┌───────────────────────────┐  │
@@ -107,7 +107,7 @@ Le dashboard HTML5/CSS lit l'état courant (matchs du jour, indice de risque, de
 | Couche | Technologie | Justification |
 |--------|-------------|---------------|
 | Ingestion | Python 3.11 (`requests`, `httpx`, `BeautifulSoup`/`playwright`) | écosystème scraping mature |
-| Ordonnancement | `cron` / `launchd` (macOS) | natif, pas de dépendance externe |
+| Ordonnancement | APScheduler (embarqué dans FastAPI) + `launchd` (macOS) | planification interne, service 24/7 auto-relancé |
 | Stockage | PostgreSQL 16 | triggers, contraintes, JSONB |
 | Orchestration LLM | FastAPI (gateway) | contrat REST simple |
 | Frontend | HTML5 + CSS pur | zéro build, glassmorphism natif |
@@ -124,22 +124,25 @@ L'**Indice de Risque** d'un match (`Matchs.indice_risque`, 0 = match « lisible 
 ## 6. Structure du dépôt
 
 ```
-oracle-2026/
-├── README.md                  # ce fichier
+CDM/
+├── README.md                       # ce fichier
+├── serveur_api.py                  # FastAPI : frontend + API + APScheduler
+├── com.thomas.oracle2026.plist     # LaunchAgent macOS (service 24/7)
+├── requirements.txt
 ├── database/
-│   └── schema.sql             # tables + triggers PostgreSQL
+│   ├── schema.sql                  # tables + triggers PostgreSQL
+│   └── seed_calendrier.py          # injection des 104 slots CDM 2026
 ├── ingestion/
-│   ├── scraper_lineups.py     # (à implémenter)
-│   ├── scraper_news.py        # (à implémenter)
-│   ├── scraper_odds.py        # (à implémenter)
-│   └── crontab.gmt4           # planification nocturne GMT+4
+│   ├── scraper_daemon.py           # ingestion API RapidAPI + RSS -> PostgreSQL
+│   └── moteur_ia.py                # pronostics LLM local (Ollama / llama3)
 ├── frontend/
-│   ├── index.html             # dashboard
-│   └── style.css              # design system liquid glass
-└── monitoring/
-    ├── nagios/commands.cfg    # définitions de commandes
-    ├── nagios/services.cfg    # définitions de services
-    └── nrpe/nrpe_local.cfg    # checks côté hôte surveillé
+│   ├── index.html                  # dashboard (3 onglets, servi par FastAPI)
+│   └── style.css                   # design system liquid glass
+├── monitoring/
+│   ├── commands.cfg                # Nagios Core (serveur de supervision)
+│   └── nrpe.cfg                    # agent NRPE (hôte surveillé)
+└── docs/
+    └── MONITORING.md               # supervision Nagios/NRPE
 ```
 
 ---
@@ -159,32 +162,54 @@ pip install -r requirements.txt
 # 3. Vérifier le fuseau du serveur (doit être GMT+4)
 sudo systemsetup -gettimezone        # attendu : Asia/Dubai ou équivalent +04
 
-# 4. Charger la planification nocturne
-crontab ingestion/crontab.gmt4
+# 4. Installer le service 24/7 (détails en §8)
+cp com.thomas.oracle2026.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 ```
 
 ---
 
-## 8. Planification (`ingestion/crontab.gmt4`)
+## 8. Planification & service 24/7
 
-```cron
-# Fuseau serveur : GMT+4. Fenêtre américaine = 01:00 → 09:00 heure locale.
-# Format : min  heure  jour  mois  jourSemaine  commande
+### Planification interne (APScheduler — plus de cron)
 
-# News & rumeurs : toutes les 10 min entre 01h et 09h
-*/10  1-8  *  6,7  *   /usr/bin/python3 $ORACLE/ingestion/scraper_news.py     >> $ORACLE/logs/news.log 2>&1
+La planification n'utilise **plus `cron`** : le serveur FastAPI (`serveur_api.py`)
+embarque un `BackgroundScheduler` APScheduler, démarré avec l'application
+(*lifespan*) et arrêté proprement avec elle. Démarrer le serveur suffit —
+aucun crontab à installer.
 
-# Compositions : toutes les 15 min entre 01h et 09h
-*/15  1-8  *  6,7  *   /usr/bin/python3 $ORACLE/ingestion/scraper_lineups.py  >> $ORACLE/logs/lineups.log 2>&1
+| Tâche | Cadence | Garde-fous |
+|-------|---------|------------|
+| `tache_ingestion` (API RapidAPI + RSS + réconciliation) | toutes les 60 min | hors fenêtre 01h–09h GMT+4 : sortie immédiate ; quota : 1 appel API/jour (verrou fichier) |
+| `tache_moteur_ia` (pronostics llama3 via Ollama) | toutes les 65 min | ne traite que les matchs sans pronostic `VALIDE` (l'obsolescence est décidée par les triggers SQL) |
 
-# Cotes : toutes les 5 min entre 01h et 09h (mouvements rapides)
-*/5   1-8  *  6,7  *   /usr/bin/python3 $ORACLE/ingestion/scraper_odds.py     >> $ORACLE/logs/odds.log 2>&1
+Chaque tâche est journalisée et blindée (`max_instances=1`, `coalesce`) : un
+cycle en échec ou trop lent ne tue ni ne double jamais le suivant.
 
-# Consolidation + déclenchement des pronostics LLM à 08h30 (juste après la fenêtre)
-30    8    *  6,7  *   /usr/bin/python3 $ORACLE/ingestion/run_predictions.py  >> $ORACLE/logs/predict.log 2>&1
+### Service macOS `launchd` (autonomie 24/7)
+
+Le LaunchAgent [`com.thomas.oracle2026.plist`](com.thomas.oracle2026.plist)
+démarre uvicorn au login (`RunAtLoad`) et le **relance automatiquement** s'il
+tombe (`KeepAlive`). Il écoute sur `0.0.0.0:8000` (accès LAN/tunnel) et écrit
+ses logs dans `logs/server.log`.
+
+```bash
+# Installation / démarrage immédiat
+cp com.thomas.oracle2026.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+
+# Contrôle
+launchctl list | grep oracle2026     # le service tourne ?
+tail -f logs/server.log              # logs uvicorn + tâches de fond
+curl -s http://localhost:8000/api/kpis
+
+# Arrêt / désinstallation
+launchctl unload ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 ```
 
-> Les mois `6,7` (juin/juillet) cadrent la période de la compétition. Adapter au calendrier officiel.
+> ⚠ Après modification du code serveur, recharger le service
+> (`launchctl unload` puis `load`) pour qu'uvicorn redémarre avec la
+> nouvelle version.
 
 ---
 
