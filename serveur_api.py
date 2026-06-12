@@ -43,10 +43,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Matchs de la fenêtre courante (12 h en arrière pour garder les matchs de la
-# nuit affichés au matin, 48 h en avant), avec — via LATERAL — le pronostic le
-# plus récent et le dernier évènement de contexte de chaque match.
-SQL_MATCHS_DU_JOUR = """
+# Trois vues sur la même requête : fenêtre courante (jour), matchs joués
+# (historique), slots du calendrier complet (calendrier). Les fragments SQL
+# sont choisis dans CE dictionnaire — jamais depuis l'entrée utilisateur.
+FILTRES = {
+    "jour": (
+        """WHERE m.statut <> 'EN_ATTENTE'
+             AND m.coup_envoi >= now() - INTERVAL '12 hours'
+             AND m.coup_envoi <  now() + INTERVAL '48 hours'""",
+        "ORDER BY m.coup_envoi",
+    ),
+    "historique": (
+        "WHERE m.statut = 'TERMINE'",
+        "ORDER BY m.coup_envoi DESC LIMIT 60",
+    ),
+    "calendrier": (
+        "WHERE m.statut = 'EN_ATTENTE'",
+        "ORDER BY m.coup_envoi",
+    ),
+}
+
+
+def signal_pari(match: dict) -> dict | None:
+    """Combine confiance IA et indice de risque en signal actionnable.
+
+    Règle (du plus restrictif au moins restrictif) :
+      - risque >= 80 ou confiance < 0.45        -> À FUIR
+      - confiance >= 0.70 et risque < 40        -> PARI FORT
+      - confiance >= 0.55 et risque < 65        -> PARI POSSIBLE
+      - sinon                                   -> PRUDENCE
+    Pas de signal sans pronostic VALIDE sur un match à venir.
+    """
+    if (match["statut"] != "A_VENIR" or match["issue"] is None
+            or match["statut_pronostic"] != "VALIDE"):
+        return None
+    confiance = float(match["confiance"])
+    risque = float(match["indice_risque"])
+    if risque >= 80 or confiance < 0.45:
+        return {"libelle": "À FUIR", "niveau": "fuir"}
+    if confiance >= 0.70 and risque < 40:
+        return {"libelle": "PARI FORT", "niveau": "fort"}
+    if confiance >= 0.55 and risque < 65:
+        return {"libelle": "PARI POSSIBLE", "niveau": "possible"}
+    return {"libelle": "PRUDENCE", "niveau": "prudence"}
+
+
+# Socle commun aux trois filtres, avec — via LATERAL — le pronostic le plus
+# récent et le dernier évènement de contexte de chaque match.
+SQL_MATCHS = """
     SELECT m.id,
            ed.nom            AS equipe_dom,
            ee.nom            AS equipe_ext,
@@ -80,9 +124,8 @@ SQL_MATCHS_DU_JOUR = """
         ORDER BY detecte_le DESC
         LIMIT 1
     ) ev ON TRUE
-    WHERE m.coup_envoi >= now() - INTERVAL '12 hours'
-      AND m.coup_envoi <  now() + INTERVAL '48 hours'
-    ORDER BY m.coup_envoi;
+    {where}
+    {order};
 """
 
 
@@ -131,17 +174,25 @@ def kpis() -> dict:
 
 
 @app.get("/api/matchs_du_jour")
-def matchs_du_jour() -> dict:
-    """Matchs du jour avec indice de risque, statut et dernier pronostic LLM."""
+def matchs_du_jour(filtre: str = "jour") -> dict:
+    """Matchs selon le filtre (jour | historique | calendrier), avec indice de
+    risque, statut, dernier pronostic LLM et signal de pari."""
+    if filtre not in FILTRES:
+        raise HTTPException(status_code=400,
+                            detail=f"Filtre inconnu : {filtre} (attendus : {', '.join(FILTRES)})")
+    where, order = FILTRES[filtre]
     try:
         conn = connecter_postgres()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Base de données injoignable : {exc}")
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(SQL_MATCHS_DU_JOUR)
+            # .format() sur des fragments internes uniquement (cf. FILTRES)
+            cur.execute(SQL_MATCHS.format(where=where, order=order))
             matchs = [dict(ligne) for ligne in cur.fetchall()]
-        return {"matchs": matchs}
+        for match in matchs:
+            match["signal"] = signal_pari(match)
+        return {"filtre": filtre, "matchs": matchs}
     finally:
         conn.close()
 

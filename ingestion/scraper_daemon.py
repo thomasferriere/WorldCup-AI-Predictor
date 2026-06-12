@@ -163,17 +163,13 @@ def recuperer_matchs_du_jour():
         with open(FICHIER_REPONSE_API, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
 
-        # Pas de filtre ligue pour l'instant : le nommage exact de la CDM dans
-        # cette API est inconnu — on prend tout et on observe la structure.
-        matchs_cdm = []
-        if "results" in data:
-            for match in data["results"]:
-                print(f"Match trouvé : {match.get('homeTeam')} vs {match.get('awayTeam')}")
-                matchs_cdm.append(match)
-        else:
-            print(f"⚠ Clé 'results' absente — clés reçues : {list(data)} (réponse brute sauvegardée)")
+        # Structure réelle observée : {"status": ..., "response": {"matches": [...]}}
+        # avec home/away = {"id", "name", "score"}. Filtre sur les ligues CDM.
+        tous = (data.get("response") or {}).get("matches") or []
+        matchs_cdm = [m for m in tous if m.get("leagueId") in LIGUES_CDM]
 
-        print(f"✅ Succès : {len(matchs_cdm)} match(s) trouvé(s).")
+        print(f"✅ Succès : {len(matchs_cdm)} match(s) de Coupe du Monde trouvé(s) "
+              f"(sur {len(tous)} matchs renvoyés).")
         return matchs_cdm
 
     except requests.exceptions.RequestException as e:
@@ -389,7 +385,13 @@ def inserer_matchs_en_base(conn: Any, matchs_api: list[dict[str, Any]]) -> list[
             ligne = cur.fetchone()
             if ligne:
                 db_id = ligne[0]
-                cur.execute("UPDATE matchs SET statut = %s WHERE id = %s", (statut, db_id))
+                # Cycle de vie : statut + score réel dès que le match a démarré
+                cur.execute(
+                    """UPDATE matchs SET statut = %s, score_dom = %s, score_ext = %s
+                       WHERE id = %s""",
+                    (statut, (m.get("home") or {}).get("score"),
+                     (m.get("away") or {}).get("score"), db_id),
+                )
             else:
                 cur.execute(
                     """INSERT INTO matchs (equipe_dom_id, equipe_ext_id, coup_envoi,

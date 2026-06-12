@@ -60,7 +60,12 @@
         <!-- ====================== MATCHS DU JOUR ====================== -->
         <section class="matches" aria-label="Matchs du jour">
             <div class="section-head">
-                <h2>Matchs de la nuit</h2>
+                <h2 id="titreSection">Matchs de la nuit</h2>
+                <nav class="tabs" role="tablist" aria-label="Vues du calendrier">
+                    <button class="tab tab--actif" data-filtre="jour" role="tab">Aujourd'hui</button>
+                    <button class="tab" data-filtre="historique" role="tab">Historique</button>
+                    <button class="tab" data-filtre="calendrier" role="tab">Calendrier 2026</button>
+                </nav>
                 <span class="pill glass-inset">15 juin 2026</span>
             </div>
 
@@ -223,6 +228,23 @@
             }).format(new Date(iso));
         }
 
+        function dateHeureServeur(iso) {
+            return new Intl.DateTimeFormat('fr-FR', {
+                day: 'numeric', month: 'short',
+                hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Dubai',
+            }).format(new Date(iso));
+        }
+
+        // Verdict a posteriori : le pronostic 1/N/2 était-il le bon ?
+        function verdictPronostic(m) {
+            if (!m.issue || m.score_dom == null || m.score_ext == null) return '';
+            const reel = m.score_dom > m.score_ext ? '1'
+                       : m.score_dom < m.score_ext ? '2' : 'N';
+            const ok = reel === m.issue;
+            return `<span class="verdict ${ok ? 'verdict--ok' : 'verdict--ko'}">
+                ${ok ? 'Pronostic ✓' : 'Pronostic ✗'}</span>`;
+        }
+
         function blocPronostic(m) {
             if (!m.issue) {
                 return `<div class="prono glass-inset">
@@ -232,6 +254,10 @@
                 </div>`;
             }
             const obsolete = m.statut_pronostic === 'OBSOLETE';
+            // Signal de pari (matchs à venir) ou verdict (matchs joués)
+            const badgeSignal = m.signal
+                ? `<span class="signal signal--${m.signal.niveau}">${esc(m.signal.libelle)}</span>`
+                : verdictPronostic(m);
             const etat = obsolete
                 ? '<span class="prono__state">OBSOLÈTE</span>'
                 : `<span class="prono__state prono__state--ok">VALIDE · ${Number(m.confiance).toFixed(2)}</span>`;
@@ -239,33 +265,57 @@
                 <span class="prono__tag">Pronostic LLM</span>
                 <span class="prono__pick">${esc(m.issue)} · ${esc(m.score_estime ?? '?')}</span>
                 ${etat}
+                ${badgeSignal}
+            </div>`;
+        }
+
+        function enteteEquipes(m, centre) {
+            return `<div class="match__teams">
+                <div class="team">
+                    <span class="team__flag">${DRAPEAUX[m.equipe_dom] ?? '⚽'}</span>
+                    <span class="team__name">${esc(m.equipe_dom)}</span>
+                </div>
+                <span class="match__vs">${centre}</span>
+                <div class="team team--right">
+                    <span class="team__name">${esc(m.equipe_ext)}</span>
+                    <span class="team__flag">${DRAPEAUX[m.equipe_ext] ?? '⚽'}</span>
+                </div>
             </div>`;
         }
 
         function carteMatch(m) {
+            // --- Slot du calendrier : carte grisée, minimale -----------------
+            if (m.statut === 'EN_ATTENTE') {
+                const meta = [m.phase, 'En attente des qualifications'].map(esc).join(' · ');
+                return `<article class="glass card match match--attente">
+                    ${enteteEquipes(m, dateHeureServeur(m.coup_envoi))}
+                    <div class="match__meta">${meta}</div>
+                </article>`;
+            }
+
             const indice = Math.round(Number(m.indice_risque));
             const niveau = classeRisque(indice);
             const enCours = m.statut === 'EN_COURS';
-            const centre = enCours
-                ? `${m.score_dom ?? 0}-${m.score_ext ?? 0}`
-                : heureServeur(m.coup_envoi);
-            const meta = [m.stade, m.ville, m.phase].filter(Boolean).map(esc).join(' · ');
+            const termine = m.statut === 'TERMINE';
+
+            // --- Match joué : score réel au centre ---------------------------
+            let centre;
+            if (termine) {
+                centre = `<span class="score-final">${m.score_dom ?? '?'} - ${m.score_ext ?? '?'}</span>`;
+            } else if (enCours) {
+                centre = `LIVE ${m.score_dom ?? 0}-${m.score_ext ?? 0}`;
+            } else {
+                centre = heureServeur(m.coup_envoi);
+            }
+
+            const meta = [termine ? dateHeureServeur(m.coup_envoi) : null,
+                          m.stade, m.ville, m.phase].filter(Boolean).map(esc).join(' · ');
             const raison = m.dernier_evenement
                 ? esc(m.dernier_evenement.slice(0, 110))
                 : 'Contexte stable · aucun évènement détecté';
 
             return `<article class="glass card match">
-                <div class="match__teams">
-                    <div class="team">
-                        <span class="team__flag">${DRAPEAUX[m.equipe_dom] ?? '⚽'}</span>
-                        <span class="team__name">${esc(m.equipe_dom)}</span>
-                    </div>
-                    <span class="match__vs">${enCours ? 'LIVE ' : ''}${centre}</span>
-                    <div class="team team--right">
-                        <span class="team__name">${esc(m.equipe_ext)}</span>
-                        <span class="team__flag">${DRAPEAUX[m.equipe_ext] ?? '⚽'}</span>
-                    </div>
-                </div>
+                ${enteteEquipes(m, centre)}
                 <div class="match__meta">${meta}</div>
                 <div class="risk">
                     <div class="risk__head">
@@ -281,10 +331,16 @@
             </article>`;
         }
 
-        async function chargerMatchs() {
+        const ONGLETS = {
+            jour:       { titre: 'Matchs de la nuit' },
+            historique: { titre: 'Historique des matchs joués' },
+            calendrier: { titre: 'Calendrier complet 2026' },
+        };
+
+        async function chargerMatchs(filtre = 'jour') {
             let data;
             try {
-                const reponse = await fetch(API_URL);
+                const reponse = await fetch(`${API_URL}?filtre=${filtre}`);
                 if (!reponse.ok) throw new Error(`HTTP ${reponse.status}`);
                 data = await reponse.json();
             } catch (err) {
@@ -295,22 +351,38 @@
             const section = document.querySelector('.matches');
             section.querySelectorAll('.match').forEach(el => el.remove());
 
+            document.getElementById('titreSection').textContent = ONGLETS[filtre].titre;
             const pill = section.querySelector('.pill');
             if (pill) {
-                pill.textContent = new Intl.DateTimeFormat('fr-FR', {
-                    day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Dubai',
-                }).format(new Date());
+                if (filtre === 'jour') {
+                    pill.textContent = new Intl.DateTimeFormat('fr-FR', {
+                        day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Dubai',
+                    }).format(new Date());
+                } else if (filtre === 'historique') {
+                    pill.textContent = `${data.matchs.length} match(s) joué(s)`;
+                } else {
+                    pill.textContent = `${data.matchs.length} matchs programmés`;
+                }
             }
 
             if (!data.matchs.length) {
                 section.insertAdjacentHTML('beforeend',
-                    '<article class="glass card match"><div class="match__meta">Aucun match dans la fenêtre courante.</div></article>');
+                    '<article class="glass card match"><div class="match__meta">Aucun match dans cette vue pour le moment.</div></article>');
                 return;
             }
             for (const m of data.matchs) {
                 section.insertAdjacentHTML('beforeend', carteMatch(m));
             }
         }
+
+        // Bascule d'onglet
+        document.querySelectorAll('.tab').forEach(bouton => {
+            bouton.addEventListener('click', () => {
+                document.querySelector('.tab--actif')?.classList.remove('tab--actif');
+                bouton.classList.add('tab--actif');
+                chargerMatchs(bouton.dataset.filtre);
+            });
+        });
 
         // Met à jour les 4 blocs du bandeau (dans l'ordre du HTML : daemons,
         // évènements, confiance moyenne, pronostics périmés).
