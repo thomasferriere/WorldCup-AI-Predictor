@@ -155,6 +155,77 @@ def marquer_api_appelee() -> None:
 # par appel_api_autorise() dans executer_cycle().
 # -----------------------------------------------------------------------------
 
+# --- SOURCE PRINCIPALE : API publique ESPN (gratuite, sans clé, sans quota) ---
+# Endpoint scoreboard de la compétition "fifa.world" : tous les matchs renvoyés
+# sont des matchs de Coupe du Monde, déjà filtrés par ESPN.
+URL_ESPN = "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
+
+
+def _normaliser_match_espn(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Convertit un évènement ESPN vers la structure interne commune.
+
+    Structure de sortie identique à celle de RapidAPI (home/away/status), pour
+    que inserer_matchs_en_base() et reconcilier_donnees() fonctionnent tels quels.
+    """
+    try:
+        comp = event["competitions"][0]
+        equipes = {c["homeAway"]: c for c in comp["competitors"]}
+        dom, ext = equipes["home"], equipes["away"]
+    except (KeyError, IndexError):
+        return None
+
+    etat = (event.get("status") or {}).get("type") or {}
+    state = etat.get("name", "")           # ex. STATUS_SCHEDULED / IN_PROGRESS / FULL_TIME
+    commence = etat.get("state") in ("in", "post")
+    fini = bool(etat.get("completed"))
+    annule = "CANCEL" in state or "POSTPONE" in state
+
+    def _score(c: dict) -> int | None:
+        # Score pertinent seulement si le match a commencé
+        if not commence:
+            return None
+        try:
+            return int(c.get("score"))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "id": f"espn-{event.get('id')}",
+        "leagueId": LIGUE_ESPN_CDM,
+        "home": {"name": dom["team"]["displayName"], "score": _score(dom)},
+        "away": {"name": ext["team"]["displayName"], "score": _score(ext)},
+        "status": {
+            "utcTime": event["date"],       # ex. 2026-06-13T22:00Z (parsé en aval)
+            "started": commence and not fini,
+            "finished": fini,
+            "cancelled": annule,
+        },
+    }
+
+
+def recuperer_matchs_espn() -> list[dict[str, Any]]:
+    """Matchs CDM via ESPN : aujourd'hui + demain (couvre les matchs de nuit).
+
+    Gratuit et illimité — aucune gestion de quota. Lève en cas d'échec réseau
+    pour que executer_cycle bascule sur le secours RapidAPI.
+    """
+    jours = [
+        (datetime.datetime.now(TZ_SERVEUR) + datetime.timedelta(days=d)).strftime("%Y%m%d")
+        for d in (0, 1)
+    ]
+    matchs: dict[str, dict[str, Any]] = {}
+    for jour in jours:
+        reponse = requests.get(URL_ESPN, params={"dates": jour}, timeout=15)
+        reponse.raise_for_status()
+        for event in reponse.json().get("events", []):
+            m = _normaliser_match_espn(event)
+            if m:
+                matchs[m["id"]] = m            # dédup par id (chevauchement des 2 jours)
+    logger.info("ESPN : %d match(s) CDM récupérés (%s)", len(matchs), " + ".join(jours))
+    return list(matchs.values())
+
+
+# --- SOURCE DE SECOURS : RapidAPI (quota 100/mois) -------------------------
 def recuperer_matchs_du_jour():
     api_key = os.getenv("RAPIDAPI_KEY")
     if not api_key:
@@ -214,16 +285,8 @@ def charger_matchs_caches() -> list[dict[str, Any]]:
 
 # Mots déclencheurs : un article n'est retenu que s'il évoque un risque sportif…
 MOTS_CLES_ALERTE = ["blessure", "forfait", "tension", "polémique"]
-
-# …ou un pays participant à la CDM 2026 (extrait — à synchroniser avec la
-# table `equipes` une fois la liste des 48 qualifiés chargée en base).
-PAYS_PARTICIPANTS = [
-    "France", "Brésil", "Argentine", "Canada", "Mexique", "États-Unis",
-    "Angleterre", "Espagne", "Allemagne", "Portugal", "Pays-Bas", "Belgique",
-    "Croatie", "Maroc", "Sénégal", "Japon", "Uruguay", "Colombie", "Équateur",
-    "Afrique du Sud", "Corée du Sud", "Tchéquie", "Autriche", "Nigéria",
-    "Guatemala",
-]
+# …ou un pays participant : la liste est dérivée de NOMS_EQUIPES_FR (défini plus
+# bas), calculée à l'exécution dans parser_flux_rss() pour éviter l'ordre d'import.
 
 
 def parser_flux_rss() -> list[dict[str, Any]]:
@@ -246,7 +309,7 @@ def parser_flux_rss() -> list[dict[str, Any]]:
         "https://rmcsport.bfmtv.com/rss/football/coupe-du-monde/",
     ]
 
-    declencheurs = MOTS_CLES_ALERTE + PAYS_PARTICIPANTS
+    declencheurs = MOTS_CLES_ALERTE + sorted(set(NOMS_EQUIPES_FR.values()))
     articles_pertinents: list[dict[str, Any]] = []
 
     for url in flux_rss:
@@ -292,13 +355,14 @@ def parser_flux_rss() -> list[dict[str, Any]]:
 # ÉTAPE 3 — Réconciliation matchs API <-> articles RSS
 # -----------------------------------------------------------------------------
 
-# Identifiants de ligue de la Coupe du Monde dans cette API, observés dans les
-# réponses réelles des 11-12/06/2026 (matchs de sélections nationales :
-# Mexico-South Africa en ouverture, Portugal-Nigeria, Austria-Guatemala…).
-LIGUES_CDM = {894790, 914609}
+# Sentinelle de ligue pour les matchs venant d'ESPN (endpoint déjà filtré sur
+# la Coupe du Monde : tous les matchs renvoyés SONT des matchs CDM). Les ID
+# numériques 894790/914609 restent ceux de RapidAPI (source de secours).
+LIGUE_ESPN_CDM = "espn-fifa-world"
+LIGUES_CDM = {LIGUE_ESPN_CDM, 894790, 914609}
 
-# L'API renvoie les noms d'équipes en anglais, les flux RSS sont en français :
-# table de correspondance pour que le rapprochement fonctionne dans les 2 sens.
+# Les API renvoient les noms d'équipes en anglais, les flux RSS sont en
+# français : table de correspondance pour le rapprochement dans les 2 sens.
 NOMS_EQUIPES_FR = {
     "france": "France", "brazil": "Brésil", "argentina": "Argentine",
     "canada": "Canada", "mexico": "Mexique", "usa": "États-Unis",
@@ -310,6 +374,17 @@ NOMS_EQUIPES_FR = {
     "south africa": "Afrique du Sud", "south korea": "Corée du Sud",
     "czechia": "Tchéquie", "austria": "Autriche", "nigeria": "Nigéria",
     "guatemala": "Guatemala",
+    # Nations supplémentaires CDM 2026 (vues côté ESPN)
+    "qatar": "Qatar", "switzerland": "Suisse", "haiti": "Haïti",
+    "scotland": "Écosse", "australia": "Australie", "turkey": "Turquie",
+    "türkiye": "Turquie", "norway": "Norvège", "italy": "Italie",
+    "denmark": "Danemark", "poland": "Pologne", "saudi arabia": "Arabie saoudite",
+    "iran": "Iran", "ghana": "Ghana", "cameroon": "Cameroun", "egypt": "Égypte",
+    "tunisia": "Tunisie", "peru": "Pérou", "chile": "Chili", "panama": "Panama",
+    "costa rica": "Costa Rica", "paraguay": "Paraguay", "ivory coast": "Côte d'Ivoire",
+    "new zealand": "Nouvelle-Zélande", "jordan": "Jordanie", "uzbekistan": "Ouzbékistan",
+    "cape verde": "Cap-Vert", "curacao": "Curaçao", "algeria": "Algérie",
+    "sweden": "Suède",
 }
 
 # Codes FIFA des équipes connues (equipes.code_fifa est NOT NULL UNIQUE).
@@ -322,6 +397,14 @@ CODES_FIFA = {
     "Uruguay": "URU", "Colombie": "COL", "Équateur": "ECU",
     "Afrique du Sud": "RSA", "Corée du Sud": "KOR", "Tchéquie": "CZE",
     "Autriche": "AUT", "Nigéria": "NGA", "Guatemala": "GUA",
+    "Qatar": "QAT", "Suisse": "SUI", "Haïti": "HAI", "Écosse": "SCO",
+    "Australie": "AUS", "Turquie": "TUR", "Norvège": "NOR", "Italie": "ITA",
+    "Danemark": "DEN", "Pologne": "POL", "Arabie saoudite": "KSA", "Iran": "IRN",
+    "Ghana": "GHA", "Cameroun": "CMR", "Égypte": "EGY", "Tunisie": "TUN",
+    "Pérou": "PER", "Chili": "CHI", "Panama": "PAN", "Costa Rica": "CRC",
+    "Paraguay": "PAR", "Côte d'Ivoire": "CIV", "Nouvelle-Zélande": "NZL",
+    "Jordanie": "JOR", "Ouzbékistan": "UZB", "Cap-Vert": "CPV", "Curaçao": "CUW",
+    "Algérie": "ALG", "Suède": "SWE",
 }
 
 
@@ -557,21 +640,26 @@ def inserer_evenements(conn: Any, evenements: list[EvenementContexte]) -> int:
 def executer_cycle() -> int:
     """Un cycle d'ingestion : API + RSS -> réconciliation -> contexte_actu."""
 
-    # 1. Matchs du jour — jusqu'à 3 appels API/jour espacés (quota 100/mois) ;
-    #    entre deux appels, on relit le cache local pour rester opérationnel.
+    # 1. Matchs du jour — ESPN en principal (gratuit, illimité). En cas
+    #    d'échec, secours RapidAPI (borné par son quota), puis cache local.
     matchs_api: list[dict[str, Any]] = []
-    if appel_api_autorise():
-        try:
-            matchs_api = recuperer_matchs_du_jour()
-            marquer_api_appelee()
-            sauvegarder_matchs_caches(matchs_api)
-        except Exception:
-            # Un volet en panne ne doit pas empêcher l'autre de produire des données
-            logger.exception("Échec du volet API stats")
-    else:
-        matchs_api = charger_matchs_caches()
-        logger.info("Quota API en pause (max %d/jour, %dh d'écart) — %d match(s) relus du cache",
-                    MAX_APPELS_API_JOUR, INTERVALLE_MIN_API_H, len(matchs_api))
+    try:
+        matchs_api = recuperer_matchs_espn()
+        sauvegarder_matchs_caches(matchs_api)
+    except Exception:
+        logger.exception("ESPN indisponible — bascule sur le secours RapidAPI")
+        if appel_api_autorise():
+            try:
+                matchs_api = recuperer_matchs_du_jour()
+                marquer_api_appelee()
+                sauvegarder_matchs_caches(matchs_api)
+            except Exception:
+                logger.exception("Secours RapidAPI en échec — relecture du cache")
+                matchs_api = charger_matchs_caches()
+        else:
+            matchs_api = charger_matchs_caches()
+            logger.info("Secours RapidAPI en pause (quota) — %d match(s) relus du cache",
+                        len(matchs_api))
 
     # 2. Synchronisation des matchs CDM en base (donne les matchs.id locaux
     #    dont la réconciliation et le moteur IA ont besoin)
