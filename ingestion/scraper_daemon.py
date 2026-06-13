@@ -209,9 +209,11 @@ def recuperer_matchs_espn() -> list[dict[str, Any]]:
     Gratuit et illimité — aucune gestion de quota. Lève en cas d'échec réseau
     pour que executer_cycle bascule sur le secours RapidAPI.
     """
+    # -2 à +1 : finalise les scores des matchs récents (robuste même si le Mac
+    # a dormi un jour ou deux) et anticipe les matchs de la nuit à venir.
     jours = [
         (datetime.datetime.now(TZ_SERVEUR) + datetime.timedelta(days=d)).strftime("%Y%m%d")
-        for d in (0, 1)
+        for d in (-2, -1, 0, 1)
     ]
     matchs: dict[str, dict[str, Any]] = {}
     for jour in jours:

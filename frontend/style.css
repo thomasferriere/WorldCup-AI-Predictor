@@ -345,6 +345,11 @@ body {
     border-color: var(--risk-high);
     box-shadow: 0 0 14px rgba(255, 107, 129, 0.3);
 }
+.signal--neutre {
+    background: rgba(244, 246, 255, 0.10);
+    color: var(--txt-soft);
+    border-color: rgba(244, 246, 255, 0.25);
+}
 
 /* ----------------------- V2 : Calendrier (slots en attente) -------- */
 .match--attente {

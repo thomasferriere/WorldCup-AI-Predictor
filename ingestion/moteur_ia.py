@@ -177,9 +177,22 @@ def extraire_champs_pronostic(texte: str) -> dict[str, Any]:
     if confiance:
         valeur_confiance = min(max(float(confiance.group(1).replace(",", ".")), 0.0), 1.0)
 
+    valeur_issue = issue.group(1).upper() if issue else "N"
+    valeur_score = score.group(1).replace(" ", "") if score else None
+
+    # Cohérence issue/score : le score chiffré fait foi. llama3 annonce parfois
+    # "Victoire X" avec un score nul (ex. 1-1) — on réaligne l'issue sur le
+    # score et on dégrade la confiance pour signaler l'incohérence d'origine.
+    if valeur_score:
+        d, _, e = valeur_score.partition("-")
+        issue_du_score = "1" if int(d) > int(e) else "2" if int(d) < int(e) else "N"
+        if issue_du_score != valeur_issue:
+            valeur_issue = issue_du_score
+            valeur_confiance = min(valeur_confiance, 0.45)
+
     return {
-        "issue": issue.group(1).upper() if issue else "N",
-        "score_estime": score.group(1).replace(" ", "") if score else None,
+        "issue": valeur_issue,
+        "score_estime": valeur_score,
         "confiance": round(valeur_confiance, 3),
         "justification": (justification.group(1).strip() if justification else texte.strip())[:2000],
     }

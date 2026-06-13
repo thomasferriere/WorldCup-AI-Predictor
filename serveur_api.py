@@ -144,6 +144,7 @@ def signal_pari(match: dict) -> dict | None:
     """Combine confiance IA et indice de risque en signal actionnable.
 
     Règle (du plus restrictif au moins restrictif) :
+      - indice de risque jamais calculé        -> À ÉVALUER (neutre)
       - risque >= 80 ou confiance < 0.45        -> À FUIR
       - confiance >= 0.70 et risque < 40        -> PARI FORT
       - confiance >= 0.55 et risque < 65        -> PARI POSSIBLE
@@ -153,6 +154,10 @@ def signal_pari(match: dict) -> dict | None:
     if (match["statut"] != "A_VENIR" or match["issue"] is None
             or match["statut_pronostic"] != "VALIDE"):
         return None
+    # indice_maj_le NULL = aucun contexte n'a encore déclenché le calcul du
+    # risque : on n'affiche PAS de "pari fort" sur un match non évalué.
+    if match.get("indice_maj_le") is None:
+        return {"libelle": "À ÉVALUER", "niveau": "neutre"}
     confiance = float(match["confiance"])
     risque = float(match["indice_risque"])
     if risque >= 80 or confiance < 0.45:
@@ -176,6 +181,7 @@ SQL_MATCHS = """
            m.phase,
            m.statut,
            m.indice_risque,
+           m.indice_maj_le,
            m.score_dom,
            m.score_ext,
            p.issue,
