@@ -271,6 +271,15 @@ body {
 }
 .prono--obsolete { opacity: 0.92; }
 
+/* Raisonnement du modèle (pourquoi ce pronostic) */
+.prono__why {
+    margin: 10px 4px 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--txt-soft);
+    font-style: italic;
+}
+
 /* ----------------------- Footer ----------------------- */
 .footer {
     text-align: center;

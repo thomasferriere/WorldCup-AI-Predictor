@@ -187,13 +187,14 @@ SQL_MATCHS = """
            p.issue,
            p.score_estime,
            p.confiance,
+           p.justification,
            p.statut          AS statut_pronostic,
            ev.description    AS dernier_evenement
     FROM matchs m
     JOIN equipes ed ON ed.id = m.equipe_dom_id
     JOIN equipes ee ON ee.id = m.equipe_ext_id
     LEFT JOIN LATERAL (
-        SELECT issue, score_estime, confiance, statut
+        SELECT issue, score_estime, confiance, justification, statut
         FROM pronostics_llm
         WHERE match_id = m.id
         ORDER BY genere_le DESC

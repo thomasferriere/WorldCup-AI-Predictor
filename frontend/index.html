@@ -6,7 +6,7 @@
     <title>Oracle 2026 — Dashboard Pronostics</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/frontend/style.css?v=2.2" />
+    <link rel="stylesheet" href="/frontend/style.css?v=2.3" />
 </head>
 <body>
     <!-- Arrière-plan complexe : dégradé + blobs colorés animés derrière le verre -->
@@ -282,12 +282,17 @@
                 : `<span class="prono__state prono__state--ok">VALIDE · ${Number(m.confiance).toFixed(2)}</span>`;
             const pick = esc(libelleIssue(m)) +
                 (m.score_estime ? ` (${esc(m.score_estime)})` : '');
+            // Raisonnement du modèle (pourquoi ce pronostic), si disponible
+            const pourquoi = m.justification
+                ? `<p class="prono__why">💬 ${esc(m.justification)}</p>`
+                : '';
             return `<div class="prono glass-inset${obsolete ? ' prono--obsolete' : ''}">
                 <span class="prono__tag">Pronostic LLM</span>
                 <span class="prono__pick">${pick}</span>
                 ${etat}
                 ${badgeSignal}
-            </div>`;
+            </div>
+            ${pourquoi}`;
         }
 
         function enteteEquipes(m, centre) {
