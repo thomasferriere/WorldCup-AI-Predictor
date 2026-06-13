@@ -74,6 +74,7 @@ SQL_MATCHS_A_ANALYSER = """
            m.ville,
            m.phase,
            m.indice_risque,
+           m.indice_maj_le,
            COALESCE(
                json_agg(
                    json_build_object(
@@ -132,25 +133,52 @@ def generer_pronostic_ollama(match_data: dict[str, Any],
             for ev in contexte_data
         )
     else:
-        lignes_contexte = "- Aucun évènement particulier : contexte stable."
+        lignes_contexte = "- Aucun évènement particulier signalé."
 
-    prompt = f"""Tu es un analyste expert des paris sportifs sur le football.
-Analyse ce match de la Coupe du Monde 2026 et donne ton pronostic.
+    # CDM 2026 : terrain neutre, sauf pour les trois pays hôtes.
+    HOTES = {"États-Unis", "Canada", "Mexique"}
+    if dom in HOTES and ext not in HOTES:
+        note_terrain = f"{dom} est un pays organisateur : léger avantage du terrain. {ext} se déplace."
+    elif ext in HOTES and dom not in HOTES:
+        note_terrain = f"{ext} est un pays organisateur : léger avantage du terrain. {dom} se déplace."
+    else:
+        note_terrain = "Match sur terrain neutre : aucune équipe ne joue à domicile."
 
-MATCH : {dom} (domicile) contre {ext} (extérieur)
-Coup d'envoi : {match_data['coup_envoi']}
-Lieu : {match_data.get('stade') or '?'}, {match_data.get('ville') or '?'} — {match_data['phase']}
-Classement FIFA : {dom} = {match_data.get('clas_dom') or '?'}, {ext} = {match_data.get('clas_ext') or '?'}
-Indice de risque calculé (0 = match lisible, 100 = très incertain) : {match_data['indice_risque']}
+    rang_dom = match_data.get("clas_dom") or "non disponible"
+    rang_ext = match_data.get("clas_ext") or "non disponible"
 
-CONTEXTE D'AVANT-MATCH (scraping de la nuit) :
+    # indice_maj_le NULL = aucun contexte n'a déclenché le calcul : "0" ne veut
+    # PAS dire "match lisible" mais "pas encore évalué". On le dit au modèle.
+    if match_data.get("indice_maj_le") is None:
+        ligne_risque = "non encore évalué (aucun évènement de contexte collecté)"
+    else:
+        ligne_risque = f"{match_data['indice_risque']} (0 = lisible, 100 = très incertain)"
+
+    prompt = f"""Tu es un analyste football neutre et rigoureux.
+Tu analyses un match de la COUPE DU MONDE 2026, organisée aux États-Unis, au
+Canada et au Mexique. Ce n'est PAS la Coupe du Monde 2022 au Qatar.
+
+RÈGLES STRICTES — à respecter impérativement :
+- Fonde ton analyse UNIQUEMENT sur les données ci-dessous.
+- N'invente JAMAIS un joueur, une blessure, un transfert, un résultat passé,
+  un pays hôte ou un évènement qui ne figure pas explicitement dans le CONTEXTE.
+- Ne mentionne un avantage du terrain QUE si la ligne « Terrain » l'indique.
+- Si les données sont insuffisantes pour trancher, dis-le honnêtement et
+  baisse ta confiance, plutôt que d'inventer une raison.
+
+MATCH : {dom} (issue 1) contre {ext} (issue 2)
+Terrain : {note_terrain}
+Classement FIFA : {dom} = {rang_dom}, {ext} = {rang_ext}
+Indice de risque : {ligne_risque}
+
+CONTEXTE D'AVANT-MATCH (seule source factuelle autorisée) :
 {lignes_contexte}
 
 Réponds EXACTEMENT dans ce format, en 4 lignes, sans aucun autre texte :
 ISSUE: 1, N ou 2 (1 = victoire {dom}, N = match nul, 2 = victoire {ext})
-SCORE: score exact le plus probable, exemple 2-1
-CONFIANCE: nombre entre 0 et 1, exemple 0.65 (baisse-la si l'indice de risque est élevé)
-JUSTIFICATION: une seule phrase en français résumant ton raisonnement"""
+SCORE: score exact probable, COHÉRENT avec l'ISSUE (ex. ISSUE N => score de nul)
+CONFIANCE: nombre entre 0 et 1 (basse si données insuffisantes ou risque élevé)
+JUSTIFICATION: une phrase en français, fondée UNIQUEMENT sur les données ci-dessus"""
 
     reponse = requests.post(
         f"{OLLAMA_URL}/api/generate",
