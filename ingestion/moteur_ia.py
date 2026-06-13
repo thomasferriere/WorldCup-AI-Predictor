@@ -147,6 +147,24 @@ def generer_pronostic_ollama(match_data: dict[str, Any],
     rang_dom = match_data.get("clas_dom") or "non disponible"
     rang_ext = match_data.get("clas_ext") or "non disponible"
 
+    # Le favori FIFA est déterminé EN CODE (rang le plus petit = meilleur) puis
+    # annoncé au modèle : le 8B local lit mal la convention inversée et se
+    # contredit. On lui livre la conclusion, il garde l'arbitrage final.
+    rd, re_ = match_data.get("clas_dom"), match_data.get("clas_ext")
+    if rd and re_:
+        if rd < re_:
+            ligne_favori = f"Sur le seul classement FIFA, {dom} est FAVORI (mieux classé : {rd} contre {re_})."
+        elif re_ < rd:
+            ligne_favori = f"Sur le seul classement FIFA, {ext} est FAVORI (mieux classé : {re_} contre {rd})."
+        else:
+            ligne_favori = "Les deux équipes sont à égalité au classement FIFA."
+    elif rd and not re_:
+        ligne_favori = f"Seul {dom} a un classement FIFA connu ({rd}) : léger crédit à {dom}."
+    elif re_ and not rd:
+        ligne_favori = f"Seul {ext} a un classement FIFA connu ({re_}) : léger crédit à {ext}."
+    else:
+        ligne_favori = "Aucun classement FIFA disponible : pas de favori sur ce critère."
+
     # indice_maj_le NULL = aucun contexte n'a déclenché le calcul : "0" ne veut
     # PAS dire "match lisible" mais "pas encore évalué". On le dit au modèle.
     if match_data.get("indice_maj_le") is None:
@@ -168,7 +186,8 @@ RÈGLES STRICTES — à respecter impérativement :
 
 MATCH : {dom} (issue 1) contre {ext} (issue 2)
 Terrain : {note_terrain}
-Classement FIFA : {dom} = {rang_dom}, {ext} = {rang_ext}
+Classement FIFA (1 = meilleure équipe du monde) : {dom} = {rang_dom}, {ext} = {rang_ext}
+>>> {ligne_favori}
 Indice de risque : {ligne_risque}
 
 CONTEXTE D'AVANT-MATCH (seule source factuelle autorisée) :

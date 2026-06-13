@@ -386,7 +386,8 @@ NOMS_EQUIPES_FR = {
     "costa rica": "Costa Rica", "paraguay": "Paraguay", "ivory coast": "Côte d'Ivoire",
     "new zealand": "Nouvelle-Zélande", "jordan": "Jordanie", "uzbekistan": "Ouzbékistan",
     "cape verde": "Cap-Vert", "curacao": "Curaçao", "algeria": "Algérie",
-    "sweden": "Suède",
+    "sweden": "Suède", "bosnia-herzegovina": "Bosnie-Herzégovine",
+    "bosnia and herzegovina": "Bosnie-Herzégovine",
 }
 
 # Codes FIFA des équipes connues (equipes.code_fifa est NOT NULL UNIQUE).
@@ -406,8 +407,15 @@ CODES_FIFA = {
     "Pérou": "PER", "Chili": "CHI", "Panama": "PAN", "Costa Rica": "CRC",
     "Paraguay": "PAR", "Côte d'Ivoire": "CIV", "Nouvelle-Zélande": "NZL",
     "Jordanie": "JOR", "Ouzbékistan": "UZB", "Cap-Vert": "CPV", "Curaçao": "CUW",
-    "Algérie": "ALG", "Suède": "SWE",
+    "Algérie": "ALG", "Suède": "SWE", "Bosnie-Herzégovine": "BIH",
 }
+
+# Toutes les nations connues, en minuscules — sert à détecter les articles
+# "panorama" (qui citent plusieurs sélections) et à les écarter du rattachement.
+NATIONS_CONNUES = {nom.lower() for nom in NOMS_EQUIPES_FR.values()}
+# Au-delà de ce nombre de nations citées, l'article est un tour d'horizon
+# générique (ex. « les favoris du Mondial »), pas un avant-match ciblé.
+MAX_NATIONS_ARTICLE = 3
 
 
 def _noms_equipes(match: dict[str, Any]) -> set[str]:
@@ -537,7 +545,11 @@ def reconcilier_donnees(matchs_api: list[dict[str, Any]],
 
         for article in articles_rss:
             mots = {m.lower() for m in article.get("mots_cles", [])}
+            # L'article doit citer une équipe de CE match…
             if not equipes & mots:
+                continue
+            # …et ne pas être un panorama générique (trop de nations citées).
+            if len(mots & NATIONS_CONNUES) > MAX_NATIONS_ARTICLE:
                 continue
 
             if "forfait" in mots:
