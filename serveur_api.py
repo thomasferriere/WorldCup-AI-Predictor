@@ -50,13 +50,13 @@ logger = logging.getLogger("oracle2026.serveur")
 # ---------------------------------------------------------------------------
 
 def tache_ingestion() -> None:
-    """Cycle scraper (API quotidienne + RSS + réconciliation + insertion).
+    """Cycle scraper (API + RSS + réconciliation + insertion), 24h/24.
 
-    Hors fenêtre nocturne 01h-09h GMT+4, run_scraper sort immédiatement ;
-    le garde-fou quota limite de toute façon l'API à 1 appel/jour.
+    Le RSS est collecté à chaque passage ; l'appel API est borné à
+    MAX_APPELS_API_JOUR appels/jour espacés (géré dans scraper_daemon).
     """
     try:
-        code = run_scraper([])   # argv vide = respecte la fenêtre nocturne
+        code = run_scraper([])
         logger.info("Tâche ingestion terminée (code %s)", code)
     except Exception:
         logger.exception("Tâche ingestion en échec")

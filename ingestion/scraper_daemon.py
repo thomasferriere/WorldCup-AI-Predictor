@@ -3,26 +3,27 @@
 scraper_daemon.py — Oracle 2026 : daemon d'ingestion (SQUELETTE)
 =================================================================
 
-Rôle : collecter le contexte d'avant-match pendant la fenêtre nocturne
-(01:00–09:00 GMT+4) et l'écrire de façon IDEMPOTENTE dans PostgreSQL
-(table `contexte_actu`), ce qui déclenche les triggers métier
-(recalcul de l'indice de risque, obsolescence des pronostics).
+Rôle : collecter le contexte d'avant-match et l'écrire de façon IDEMPOTENTE
+dans PostgreSQL (table `contexte_actu`), ce qui déclenche les triggers métier
+(recalcul de l'indice de risque, obsolescence des pronostics). Le cycle tourne
+24h/24 (planifié par APScheduler dans serveur_api.py) : le RSS est collecté à
+chaque passage, l'appel API est borné à quelques fois par jour (quota).
 
 Trois sources, trois étapes :
   1. API RapidAPI "Free API Live Football Data" -> matchs du jour
-     ⚠ quota plan gratuit : 100 requêtes/MOIS -> 1 seul appel par jour,
-     verrouillé par un fichier d'état (.derniere_date_api).
+     ⚠ quota plan gratuit : 100 requêtes/MOIS -> max 3 appels/jour espacés,
+     comptés dans un fichier d'état (.derniere_date_api).
      Clé secrète dans .env (jamais commitée), chargée via python-dotenv.
   2. Flux RSS d'actualité           -> rumeurs, conférences, news de dernière minute
   3. Préparation + UPSERT PostgreSQL (clé naturelle anti-doublon, cf. schema.sql)
 
-Lancement (cron, cf. README §8) :
+Lancement :
     /usr/bin/python3 scraper_daemon.py            # un cycle puis sortie
-    /usr/bin/python3 scraper_daemon.py --force    # ignore la fenêtre nocturne (debug)
+    /usr/bin/python3 scraper_daemon.py --force    # force un appel API immédiat
+                                                  # (ignore l'espacement, pas le plafond/jour)
 
 Supervision : le process est surveillé par NRPE (check_proc_daemon) et la
 fraîcheur des données insérées par check_freshness — voir monitoring/nrpe.cfg.
-Toute sortie va sur stdout/stderr, redirigée vers les logs par cron.
 
 Dépendances (requirements.txt) :
     requests        # appels API REST
@@ -57,13 +58,13 @@ load_dotenv()
 # Fuseau serveur : GMT+4 (cf. README — jamais d'heure "naïve")
 TZ_SERVEUR = datetime.timezone(datetime.timedelta(hours=4), name="GMT+4")
 
-# Fenêtre d'ingestion nocturne, en heure serveur
-FENETRE_DEBUT = 1   # 01:00
-FENETRE_FIN = 9     # 09:00 (exclu)
-
-# QUOTA RapidAPI plan gratuit : 100 requêtes / MOIS -> 1 seul appel API / jour.
-# Le cron relance ce script toutes les 5-15 min pendant la fenêtre nocturne :
-# ce fichier d'état mémorise la date du dernier appel pour ne pas le répéter.
+# QUOTA RapidAPI plan gratuit : 100 requêtes / MOIS. On vise jusqu'à 3 appels
+# API par jour (3 × 30 = 90 < 100), espacés d'au moins quelques heures pour
+# couvrir matin / midi / soir et rafraîchir les scores en cours de journée.
+# Le RSS, lui, est gratuit et illimité : le cycle complet tourne 24h/24.
+MAX_APPELS_API_JOUR = 3
+INTERVALLE_MIN_API_H = 5   # heures minimum entre deux appels API
+# Fichier d'état du quota : {"date": "AAAAMMJJ", "count": n, "dernier": ISO}
 FICHIER_ETAT_API = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".derniere_date_api")
 
 # Cache local des matchs du jour : l'appel API n'a lieu qu'une fois par jour,
@@ -101,42 +102,57 @@ class EvenementContexte:
 
 
 # -----------------------------------------------------------------------------
-# ÉTAPE 0 — Garde-fou : ne travailler que pendant la fenêtre nocturne.
+# ÉTAPE 0 — Garde-fou quota : étaler jusqu'à 3 appels API/jour.
 # -----------------------------------------------------------------------------
 
-def dans_fenetre_nocturne(maintenant: datetime.datetime | None = None) -> bool:
-    """Vrai si l'heure serveur (GMT+4) est dans la fenêtre 01:00–09:00.
-
-    Hors fenêtre il n'y a quasiment pas de données nouvelles côté Amériques ;
-    on sort immédiatement pour économiser les quotas API et éviter le ban IP.
-    """
-    heure = (maintenant or datetime.datetime.now(TZ_SERVEUR)).astimezone(TZ_SERVEUR).hour
-    return FENETRE_DEBUT <= heure < FENETRE_FIN
-
-
-def api_deja_appelee_aujourdhui() -> bool:
-    """Garde-fou quota : vrai si l'appel API quotidien a déjà été consommé.
-
-    Plan gratuit RapidAPI = 100 requêtes/mois ; le cron repasse toutes les
-    5-15 min, donc sans ce verrou la nuit entière viderait le quota en 2 jours.
-    """
+def _lire_etat_api() -> dict:
     try:
         with open(FICHIER_ETAT_API, encoding="utf-8") as f:
-            return f.read().strip() == datetime.datetime.now(TZ_SERVEUR).strftime("%Y%m%d")
-    except FileNotFoundError:
-        return False
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def appel_api_autorise() -> bool:
+    """Vrai si un appel API est permis maintenant : moins de MAX_APPELS_API_JOUR
+    aujourd'hui ET au moins INTERVALLE_MIN_API_H depuis le dernier appel.
+
+    Le cycle tourne toutes les heures ; ce verrou évite de vider le quota
+    mensuel tout en laissant 2-3 rafraîchissements de scores répartis sur la
+    journée (le contexte RSS, lui, est collecté à chaque cycle, gratuitement).
+    """
+    etat = _lire_etat_api()
+    aujourdhui = datetime.datetime.now(TZ_SERVEUR).strftime("%Y%m%d")
+    if etat.get("date") != aujourdhui:
+        return True                                    # nouveau jour : compteur remis à zéro
+    if etat.get("count", 0) >= MAX_APPELS_API_JOUR:
+        return False                                   # plafond/jour : jamais dépassé, même --force
+    if os.environ.get("ORACLE_FORCE_API") == "1":
+        return True                                    # --force : ignore l'espacement
+    dernier = etat.get("dernier")
+    if dernier:
+        ecart = datetime.datetime.now(TZ_SERVEUR) - datetime.datetime.fromisoformat(dernier)
+        if ecart < datetime.timedelta(hours=INTERVALLE_MIN_API_H):
+            return False
+    return True
 
 
 def marquer_api_appelee() -> None:
-    """Enregistre que l'appel API du jour a été effectué."""
+    """Incrémente le compteur d'appels du jour et horodate le dernier appel."""
+    etat = _lire_etat_api()
+    aujourdhui = datetime.datetime.now(TZ_SERVEUR).strftime("%Y%m%d")
+    if etat.get("date") != aujourdhui:
+        etat = {"date": aujourdhui, "count": 0}
+    etat["count"] = etat.get("count", 0) + 1
+    etat["dernier"] = datetime.datetime.now(TZ_SERVEUR).isoformat()
     with open(FICHIER_ETAT_API, "w", encoding="utf-8") as f:
-        f.write(datetime.datetime.now(TZ_SERVEUR).strftime("%Y%m%d"))
+        json.dump(etat, f)
 
 
 # -----------------------------------------------------------------------------
 # ÉTAPE 1 — API de statistiques sportives (RapidAPI "Free API Live Football Data")
-# Quota plan gratuit : 100 requêtes/mois -> UN SEUL appel par jour, protégé par
-# api_deja_appelee_aujourdhui() dans executer_cycle().
+# Quota plan gratuit : 100 requêtes/mois -> max 3 appels/jour espacés, protégé
+# par appel_api_autorise() dans executer_cycle().
 # -----------------------------------------------------------------------------
 
 def recuperer_matchs_du_jour():
@@ -541,14 +557,10 @@ def inserer_evenements(conn: Any, evenements: list[EvenementContexte]) -> int:
 def executer_cycle() -> int:
     """Un cycle d'ingestion : API + RSS -> réconciliation -> contexte_actu."""
 
-    # 1. Matchs du jour — UN appel API par jour maximum (quota 100/mois),
-    #    puis cache local pour les passages cron suivants de la même nuit.
+    # 1. Matchs du jour — jusqu'à 3 appels API/jour espacés (quota 100/mois) ;
+    #    entre deux appels, on relit le cache local pour rester opérationnel.
     matchs_api: list[dict[str, Any]] = []
-    if api_deja_appelee_aujourdhui():
-        matchs_api = charger_matchs_caches()
-        logger.info("Appel API quotidien déjà consommé — %d match(s) relus depuis le cache",
-                    len(matchs_api))
-    else:
+    if appel_api_autorise():
         try:
             matchs_api = recuperer_matchs_du_jour()
             marquer_api_appelee()
@@ -556,6 +568,10 @@ def executer_cycle() -> int:
         except Exception:
             # Un volet en panne ne doit pas empêcher l'autre de produire des données
             logger.exception("Échec du volet API stats")
+    else:
+        matchs_api = charger_matchs_caches()
+        logger.info("Quota API en pause (max %d/jour, %dh d'écart) — %d match(s) relus du cache",
+                    MAX_APPELS_API_JOUR, INTERVALLE_MIN_API_H, len(matchs_api))
 
     # 2. Synchronisation des matchs CDM en base (donne les matchs.id locaux
     #    dont la réconciliation et le moteur IA ont besoin)
@@ -607,10 +623,12 @@ def main(argv: list[str]) -> int:
         format="%(asctime)s %(levelname)s %(name)s : %(message)s",
     )
 
-    if "--force" not in argv and not dans_fenetre_nocturne():
-        logger.info("Hors fenêtre nocturne (01h-09h GMT+4) — rien à faire, sortie propre")
-        return 0
-
+    # Plus de fenêtre nocturne : le cycle tourne 24h/24 (le RSS est gratuit, et
+    # l'appel API est borné par appel_api_autorise()). --force est conservé pour
+    # forcer un appel API immédiat (ignore l'espacement, jamais le plafond/jour).
+    if "--force" in argv:
+        # marqueur lu par appel_api_autorise via une variable d'env interne
+        os.environ["ORACLE_FORCE_API"] = "1"
     return executer_cycle()
 
 
