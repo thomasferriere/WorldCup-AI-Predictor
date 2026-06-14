@@ -119,8 +119,10 @@ cp .env.example .env   # puis éditer .env
 Le service `launchd` fait tout démarrer au login du Mac et relance le serveur s'il s'arrête.
 
 ```bash
-# Installer le service
-cp com.thomas.oracle2026.plist ~/Library/LaunchAgents/
+# Installer le service (le plist contient un chemin placeholder à remplacer
+# par le chemin réel du projet — le sed s'en charge)
+sed "s#/ABSOLUTE/PATH/TO/CDM#$PWD#g" com.thomas.oracle2026.plist \
+  > ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 
 # Le dashboard est sur http://localhost:8000

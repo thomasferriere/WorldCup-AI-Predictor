@@ -7,9 +7,12 @@
   relance automatiquement s'il tombe. launchd ne développe PAS les variables
   d'environnement : tous les chemins sont absolus.
 
-  Installation :  cp com.thomas.oracle2026.plist ~/Library/LaunchAgents/
-                  launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
-  Arrêt :         launchctl unload ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+  AVANT INSTALLATION : remplacer /ABSOLUTE/PATH/TO/CDM par le chemin réel du
+  projet, par exemple :
+    sed "s#/ABSOLUTE/PATH/TO/CDM#$PWD#g" com.thomas.oracle2026.plist \
+      > ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+    launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+  Arrêt :  launchctl unload ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 -->
 <plist version="1.0">
 <dict>
@@ -18,7 +21,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/thomasferriere/CDM/.venv/bin/uvicorn</string>
+        <string>/ABSOLUTE/PATH/TO/CDM/.venv/bin/uvicorn</string>
         <string>serveur_api:app</string>
         <string>--port</string>
         <string>8000</string>
@@ -27,7 +30,7 @@
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/thomasferriere/CDM</string>
+    <string>/ABSOLUTE/PATH/TO/CDM</string>
 
     <!-- Démarre au chargement et redémarre en cas de crash -->
     <key>RunAtLoad</key>
@@ -37,8 +40,8 @@
 
     <!-- Logs uvicorn + tâches de fond (dossier logs/ ignoré par Git) -->
     <key>StandardOutPath</key>
-    <string>/Users/thomasferriere/CDM/logs/server.log</string>
+    <string>/ABSOLUTE/PATH/TO/CDM/logs/server.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/thomasferriere/CDM/logs/server.log</string>
+    <string>/ABSOLUTE/PATH/TO/CDM/logs/server.log</string>
 </dict>
 </plist>
