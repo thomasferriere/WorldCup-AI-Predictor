@@ -56,8 +56,7 @@ L'intérêt de mettre ce calcul dans la base et pas dans le code : il s'applique
 | Planification | APScheduler (dans le serveur) | pas de cron à gérer |
 | Service | `launchd` (macOS) | démarrage auto, relance auto |
 | Frontend | HTML + CSS, zéro build | clair/sombre, minimaliste |
-
-> RapidAPI reste branché en secours si ESPN tombe, mais n'est plus la source principale : son offre gratuite ne contenait pas les matchs de la CDM.
+| Réglages | `ingestion/config.py` | sources, seuils, cadences au même endroit |
 
 ## Structure du dépôt
 
@@ -73,6 +72,7 @@ CDM/
 │   ├── seed_calendrier.py          # 104 slots de matchs de la CDM 2026
 │   └── seed_classements.py         # classements FIFA réels + force des équipes
 ├── ingestion/
+│   ├── config.py                   # réglages centralisés (sources, seuils, cadences)
 │   ├── scraper_daemon.py           # ESPN + RSS -> PostgreSQL
 │   └── moteur_ia.py                # pronostics llama3 via Ollama
 ├── frontend/
@@ -140,13 +140,13 @@ launchctl unload ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 launchctl load   ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 ```
 
-Le planificateur relance l'ingestion toutes les 60 minutes et le moteur d'IA toutes les 65. L'ingestion tourne jour et nuit : le RSS est gratuit, et les appels à l'API de secours sont limités à trois par jour, espacés. Le moteur d'IA ne pronostique que les matchs à venir qui n'ont pas encore de pronostic valide — c'est la base, via ses triggers, qui décide de ce qui doit être (re)calculé.
+Le planificateur relance l'ingestion toutes les 60 minutes et le moteur d'IA toutes les 65 (ces cadences, comme les sources et les seuils, se règlent dans `ingestion/config.py`). L'ingestion tourne jour et nuit : ESPN et le RSS sont gratuits et sans quota. Le moteur d'IA ne pronostique que les matchs à venir qui n'ont pas encore de pronostic valide — c'est la base, via ses triggers, qui décide de ce qui doit être (re)calculé.
 
 Pour accéder au dashboard depuis un téléphone, l'IP locale du Mac suffit sur le même Wi-Fi (`ipconfig getifaddr en0`, puis `http://CETTE-IP:8000`). Pour l'extérieur, un tunnel (ngrok, cloudflared) vers le port 8000.
 
 ## Tests
 
-La logique pure (garde-fou quota, cohérence issue/score d'un pronostic, signal de pari, normalisation des matchs ESPN, dérivation de force FIFA) est couverte par une suite pytest qui ne touche ni à la base ni au réseau.
+La logique pure (cohérence issue/score d'un pronostic, signal de pari, normalisation des matchs ESPN, rejet des articles RSS génériques, dérivation de force FIFA) est couverte par une suite pytest qui ne touche ni à la base ni au réseau.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt

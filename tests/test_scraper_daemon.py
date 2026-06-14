@@ -1,46 +1,8 @@
 """Tests de la logique pure du daemon d'ingestion (sans base ni réseau)."""
 
-import datetime
 import importlib
 
 import scraper_daemon as sd
-
-
-# ---------------------------------------------------------------------------
-# Garde-fou quota API : max 3 appels/jour, espacés.
-# ---------------------------------------------------------------------------
-
-def _isoler_etat(tmp_path, monkeypatch):
-    """Pointe le fichier d'état du quota vers un fichier temporaire."""
-    monkeypatch.setattr(sd, "FICHIER_ETAT_API", str(tmp_path / "etat_api"))
-    monkeypatch.delenv("ORACLE_FORCE_API", raising=False)
-
-
-def test_quota_autorise_quand_vierge(tmp_path, monkeypatch):
-    _isoler_etat(tmp_path, monkeypatch)
-    assert sd.appel_api_autorise() is True
-
-
-def test_quota_bloque_juste_apres_un_appel(tmp_path, monkeypatch):
-    _isoler_etat(tmp_path, monkeypatch)
-    sd.marquer_api_appelee()
-    # Espacement minimal non écoulé -> refusé
-    assert sd.appel_api_autorise() is False
-
-
-def test_quota_force_ignore_l_espacement(tmp_path, monkeypatch):
-    _isoler_etat(tmp_path, monkeypatch)
-    sd.marquer_api_appelee()
-    monkeypatch.setenv("ORACLE_FORCE_API", "1")
-    assert sd.appel_api_autorise() is True
-
-
-def test_quota_plafond_jamais_depasse_meme_force(tmp_path, monkeypatch):
-    _isoler_etat(tmp_path, monkeypatch)
-    for _ in range(sd.MAX_APPELS_API_JOUR):
-        sd.marquer_api_appelee()
-    monkeypatch.setenv("ORACLE_FORCE_API", "1")
-    assert sd.appel_api_autorise() is False
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,6 @@ Lancement (cron à 08:30 GMT+4, juste après la fenêtre d'ingestion — README 
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sys
 from typing import Any
@@ -39,17 +38,14 @@ import psycopg2.extras
 import requests
 from dotenv import load_dotenv
 
+import config
 # Connexion PostgreSQL partagée avec le daemon d'ingestion (variables DB_*)
 from scraper_daemon import connecter_postgres
 
 load_dotenv()
 
-# Ollama local — aucun secret nécessaire, mais l'URL reste surchargeable
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
-OLLAMA_TIMEOUT = 180   # un modèle 8B local peut être lent à la première requête
-
-MODEL_VERSION = f"{OLLAMA_MODEL}-local"
+# Modèle d'IA local (réglages dans config.py)
+MODEL_VERSION = f"{config.OLLAMA_MODEL}-local"
 
 logger = logging.getLogger("oracle2026.moteur_ia")
 
@@ -200,9 +196,9 @@ CONFIANCE: nombre entre 0 et 1 (basse si données insuffisantes ou risque élev�
 JUSTIFICATION: une phrase en français, fondée UNIQUEMENT sur les données ci-dessus"""
 
     reponse = requests.post(
-        f"{OLLAMA_URL}/api/generate",
-        json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-        timeout=OLLAMA_TIMEOUT,
+        f"{config.OLLAMA_URL}/api/generate",
+        json={"model": config.OLLAMA_MODEL, "prompt": prompt, "stream": False},
+        timeout=config.OLLAMA_TIMEOUT,
     )
     reponse.raise_for_status()
     return reponse.json()["response"]

@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 # deux styles d'import créeraient deux instances des mêmes modules.
 RACINE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(RACINE, "ingestion"))
+import config                                    # noqa: E402
 from moteur_ia import main as run_ia            # noqa: E402
 from scraper_daemon import connecter_postgres   # noqa: E402
 from scraper_daemon import main as run_scraper  # noqa: E402
@@ -82,13 +83,14 @@ async def lifespan(_app: FastAPI):
     planificateur = BackgroundScheduler(timezone="Asia/Dubai")
     # max_instances=1 : un cycle encore en cours n'est jamais doublé ;
     # coalesce : les exécutions manquées (machine en veille) sont fusionnées.
-    planificateur.add_job(tache_ingestion, "interval", minutes=60,
+    planificateur.add_job(tache_ingestion, "interval", minutes=config.CADENCE_INGESTION_MIN,
                           id="ingestion", coalesce=True, max_instances=1)
-    # 65 min (et non 60) : laisse au scraper le temps de finir avant l'IA
-    planificateur.add_job(tache_moteur_ia, "interval", minutes=65,
+    # cadence IA décalée : laisse au scraper le temps de finir avant les pronostics
+    planificateur.add_job(tache_moteur_ia, "interval", minutes=config.CADENCE_IA_MIN,
                           id="moteur_ia", coalesce=True, max_instances=1)
     planificateur.start()
-    logger.info("Planificateur démarré : ingestion / 60 min, moteur IA / 65 min")
+    logger.info("Planificateur démarré : ingestion / %d min, moteur IA / %d min",
+                config.CADENCE_INGESTION_MIN, config.CADENCE_IA_MIN)
     yield
     planificateur.shutdown(wait=False)
 
@@ -160,11 +162,11 @@ def signal_pari(match: dict) -> dict | None:
         return {"libelle": "À ÉVALUER", "niveau": "neutre"}
     confiance = float(match["confiance"])
     risque = float(match["indice_risque"])
-    if risque >= 80 or confiance < 0.45:
+    if risque >= config.SIGNAL_RISQUE_FUIR or confiance < config.SIGNAL_CONFIANCE_MIN:
         return {"libelle": "À FUIR", "niveau": "fuir"}
-    if confiance >= 0.70 and risque < 40:
+    if confiance >= config.SIGNAL_FORT_CONFIANCE and risque < config.SIGNAL_FORT_RISQUE:
         return {"libelle": "PARI FORT", "niveau": "fort"}
-    if confiance >= 0.55 and risque < 65:
+    if confiance >= config.SIGNAL_POSSIBLE_CONFIANCE and risque < config.SIGNAL_POSSIBLE_RISQUE:
         return {"libelle": "PARI POSSIBLE", "niveau": "possible"}
     return {"libelle": "PRUDENCE", "niveau": "prudence"}
 
@@ -212,13 +214,13 @@ SQL_MATCHS = """
 """
 
 
-# KPIs du bandeau : tous calculés sur la même fenêtre que /api/matchs_du_jour
-# pour que les chiffres du haut correspondent aux cartes affichées en dessous.
-SQL_KPIS = """
+# KPIs du bandeau : calculés sur la fenêtre courante (config.AFFICHAGE_*) pour
+# refléter l'activité du moment (évènements collectés, confiance, périmés).
+SQL_KPIS = f"""
     WITH fenetre AS (
         SELECT id FROM matchs
-        WHERE coup_envoi >= now() - INTERVAL '12 hours'
-          AND coup_envoi <  now() + INTERVAL '48 hours'
+        WHERE coup_envoi >= now() - INTERVAL '{config.AFFICHAGE_PASSE}'
+          AND coup_envoi <  now() + INTERVAL '{config.AFFICHAGE_FUTUR}'
     )
     SELECT
         (SELECT count(*) FROM contexte_actu
