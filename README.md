@@ -7,6 +7,17 @@ Un tableau de bord personnel qui suit la Coupe du Monde 2026 tout seul. Il récu
 
 À garder en tête : c'est un projet technique, pas un outil de pari. Les pronostics sont indicatifs.
 
+## Aperçu
+
+Le dashboard, en thème clair et en thème sombre (il suit le système, avec une bascule manuelle) :
+
+<p align="center">
+  <img src="docs/screenshots/dashboard-light.png" width="49%" alt="Dashboard Oracle 2026 — thème clair" />
+  <img src="docs/screenshots/dashboard-dark.png" width="49%" alt="Dashboard Oracle 2026 — thème sombre" />
+</p>
+
+Chaque carte montre le score (ou l'heure), l'indice de risque, le pronostic de l'IA avec sa confiance, le signal de pari et la phrase d'explication du modèle.
+
 ## Ce que ça fait, concrètement
 
 Toutes les heures, le système :
