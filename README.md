@@ -1,153 +1,90 @@
-# ⚽ Oracle 2026 — Moteur de Pronostics Automatisés (Coupe du Monde 2026)
+# Oracle 2026 — pronostics Coupe du Monde
 
-> Infrastructure data-driven pour l'agrégation de contexte sportif, le calcul d'indices de risque et la génération de pronostics assistés par LLM léger.
+Un tableau de bord personnel qui suit la Coupe du Monde 2026 tout seul. Il récupère les matchs et les scores, lit la presse pour repérer ce qui peut faire basculer une rencontre, en tire un indice de risque, puis demande son avis à un modèle d'IA local avant d'afficher le résultat sur une page web sobre. Une fois lancé, il tourne sur un Mac sans qu'on ait à y toucher.
 
-[![Statut](https://img.shields.io/badge/statut-fondation-blue)]()
-[![Stack](https://img.shields.io/badge/stack-Python%20%7C%20PostgreSQL%20%7C%20Nagios-success)]()
-[![Plateforme](https://img.shields.io/badge/host-macOS%20(GMT%2B4)-lightgrey)]()
+À garder en tête : c'est un projet technique, pas un outil de pari. Les pronostics sont indicatifs.
 
----
+## Ce que ça fait, concrètement
 
-## 1. Vision du projet
+Toutes les heures, le système :
 
-`Oracle 2026` est une plateforme qui **ingère automatiquement** le contexte d'avant-match (compositions, blessures, suspensions, météo, rumeurs de dernière minute, cotes), le **structure** dans une base relationnelle PostgreSQL, calcule des **indicateurs métier dérivés** (notamment un *Indice de Risque* par match), puis expose ces données à une **API de modèle LLM léger** qui produit le pronostic final.
+1. interroge l'API publique d'ESPN pour les matchs du jour (équipes, horaires, scores en direct, statut) ;
+2. lit deux flux RSS sportifs français (L'Équipe, RMC Sport) à la recherche de blessures, forfaits, tensions ou polémiques visant une des équipes qui jouent ;
+3. rapproche ces articles des bons matchs et les écrit en base ;
+4. laisse PostgreSQL recalculer l'indice de risque de chaque match — toute la logique métier vit dans des triggers, pas dans le code Python ;
+5. demande à un modèle llama3 tournant en local (via Ollama) un pronostic pour chaque match à venir : issue, score probable, confiance, et une phrase d'explication ;
+6. expose le résultat à une page web qui se met à jour seule.
 
-Cette première phase ne contient **pas** le LLM décisionnel : elle livre la **fondation** (pipeline d'ingestion, base de données, triggers métier, frontend, supervision) sur laquelle le modèle viendra se brancher via un simple contrat d'API.
+Le modèle ne décide pas dans le vide. On lui donne le classement FIFA réel des deux équipes, on lui désigne le favori (calculé en Python, parce qu'un petit modèle lit mal la convention « 1 = meilleur »), l'indice de risque, et le contexte trouvé dans la presse. On lui interdit aussi d'inventer des faits qui ne sont pas dans ces données.
 
----
-
-## 2. Architecture générale
+## L'architecture en une image
 
 ```
-                       macOS host — fuseau serveur : GMT+4
-┌──────────────────────────────────────────────────────────────────────────┐
-│                                                                            │
-│   ⏱  APScheduler embarqué dans FastAPI (fenêtre nocturne 01:00 → 09:00)    │
-│        │                                                                   │
-│        ▼                                                                   │
-│   ┌─────────────────────┐     scraping     ┌───────────────────────────┐  │
-│   │  DAEMONS D'INGESTION │ ───────────────► │  Sources externes          │ │
-│   │  (scrapers Python)   │ ◄─────────────── │  flux cotes / news / lineup │ │
-│   │  - scraper_lineups   │                  └───────────────────────────┘  │
-│   │  - scraper_news      │                                                 │
-│   │  - scraper_odds      │                                                 │
-│   └─────────┬───────────┘                                                  │
-│             │ INSERT / UPSERT                                              │
-│             ▼                                                              │
-│   ┌─────────────────────────────────────────────┐                         │
-│   │            PostgreSQL  (couche stockage)      │                        │
-│   │  Tables : Equipes · Matchs · Contexte_Actu    │                        │
-│   │           Pronostics_LLM                      │                        │
-│   │  ⚙ TRIGGERS métier (indice de risque, etc.)   │                        │
-│   └─────────┬───────────────────────────┬─────────┘                        │
-│             │ lecture features          │ écriture pronostic               │
-│             ▼                            ▲                                  │
-│   ┌──────────────────────┐    HTTP/JSON  │                                 │
-│   │  Orchestrateur LLM    │ ─────────────┘                                 │
-│   │  (API model gateway)  │  appel au modèle léger (phase 2)               │
-│   └─────────┬────────────┘                                                 │
-│             │ REST / JSON                                                  │
-│             ▼                                                              │
-│   ┌──────────────────────┐                                                 │
-│   │  Frontend Dashboard   │  HTML5 + CSS (Glassmorphism / liquid glass)    │
-│   │  (cartes translucides)│                                                │
-│   └──────────────────────┘                                                 │
-│                                                                            │
-│   🔍 SUPERVISION : Nagios Core + agent NRPE surveillent en continu les     │
-│      daemons de scraping, la fraîcheur des données et l'état PostgreSQL.   │
-└──────────────────────────────────────────────────────────────────────────┘
+   ESPN (scores, fixtures)  ─┐
+                             ├─► scraper_daemon.py ─► PostgreSQL ─► triggers (indice de risque)
+   RSS L'Équipe / RMC ───────┘                          │
+                                                         ▼
+                                          moteur_ia.py ─► Ollama / llama3
+                                                         │
+                                                         ▼
+                              serveur_api.py (FastAPI) ─► dashboard web
+                                     ▲
+                              APScheduler relance le cycle toutes les heures
+                              launchd garde le serveur en vie 24/7
 ```
 
----
+Tout vit dans un seul processus uvicorn : il sert la page, répond à l'API, et héberge le planificateur qui relance l'ingestion et l'IA. `launchd` le lance au démarrage du Mac et le relève s'il tombe.
 
-## 3. Flux de données détaillé
+## La pièce maîtresse : l'indice de risque
 
-### Étape 1 — Ingestion nocturne (daemons de scraping)
+Chaque match porte un `indice_risque` entre 0 et 100 (0 = lisible, 100 = très incertain). Il n'est jamais calculé en Python : un trigger PostgreSQL le recalcule à chaque fois qu'un évènement de contexte arrive. Il mélange deux choses — l'écart de niveau entre les deux équipes (tiré du classement FIFA) et la somme pondérée des évènements de presse (une blessure de titulaire pèse lourd, une rumeur peu). Un autre trigger marque automatiquement un pronostic comme périmé si le risque de son match bouge trop après coup.
 
-Le cœur du système est une **fenêtre d'ingestion nocturne**. La compétition se déroulant sur le **continent américain** (fuseaux ≈ GMT‑3 à GMT‑7) alors que le serveur tourne en **GMT+4**, les matchs en soirée locale américaine et surtout les **rumeurs de dernière minute** (compositions officielles publiées ~1h avant le coup d'envoi) tombent majoritairement entre **02:00 et 08:00 heure serveur**.
+L'intérêt de mettre ce calcul dans la base et pas dans le code : il s'applique pareil quoi qu'il arrive, qu'on écrive la donnée via le scraper ou qu'on corrige une ligne à la main en SQL. Le détail est dans [`database/schema.sql`](database/schema.sql).
 
-Trois daemons indépendants couvrent cette fenêtre :
+## La pile technique
 
-| Daemon | Rôle | Cadence (GMT+4) |
-|--------|------|-----------------|
-| `scraper_lineups` | Compositions probables / officielles, blessures, suspensions | toutes les 15 min, 01:00–09:00 |
-| `scraper_news` | Rumeurs, presse, conférences d'avant-match → table `Contexte_Actu` | toutes les 10 min, 01:00–09:00 |
-| `scraper_odds` | Cotes des bookmakers, mouvements de ligne | toutes les 5 min, 01:00–09:00 |
+| Couche | Choix | Pourquoi |
+|--------|-------|----------|
+| Données match | API publique ESPN | gratuite, sans clé, couvre vraiment la CDM 2026 |
+| Contexte presse | flux RSS + `feedparser` | gratuit et illimité |
+| Stockage | PostgreSQL 16 | les triggers font le gros du travail métier |
+| IA | Ollama + llama3 (8B, local) | aucun coût, aucune donnée qui sort de la machine |
+| Serveur | FastAPI + uvicorn | sert l'API et la page sur la même origine |
+| Planification | APScheduler (dans le serveur) | pas de cron à gérer |
+| Service | `launchd` (macOS) | démarrage auto, relance auto |
+| Frontend | HTML + CSS, zéro build | clair/sombre, minimaliste |
 
-Chaque daemon est **idempotent** (UPSERT sur clé naturelle) afin qu'une réexécution ne duplique jamais une donnée. Les écritures dans `Contexte_Actu` déclenchent automatiquement les **triggers SQL** (voir §5).
+> RapidAPI reste branché en secours si ESPN tombe, mais n'est plus la source principale : son offre gratuite ne contenait pas les matchs de la CDM.
 
-> ⚠️ **Pourquoi pas un service permanent 24/7 ?** Hors fenêtre américaine, il n'y a quasiment aucune donnée nouvelle. Concentrer la charge sur 01:00–09:00 réduit le risque de bannissement IP, économise les ressources de la machine macOS de test et simplifie la supervision (un scraper *doit* tourner la nuit, un silence la nuit = alerte critique).
-
-### Étape 2 — Stockage (PostgreSQL)
-
-Toutes les données convergent vers une base PostgreSQL unique. La logique métier dérivée (ex. **Indice de Risque**) n'est **pas** calculée dans le code Python mais **dans la base via des triggers**, garantissant que la valeur reste cohérente quelle que soit la source de l'écriture (scraper, import manuel, correction SQL).
-
-### Étape 3 — Appel API vers le LLM (phase 2, déjà câblée)
-
-Un **orchestrateur** lit les *features* consolidées d'un match (stats équipes + `Contexte_Actu` agrégé + `indice_risque`), construit un *prompt* structuré et appelle le **modèle LLM léger** via une API REST interne. La réponse (équipe favorite, score probable, niveau de confiance, justification) est écrite dans `Pronostics_LLM`. Le contrat d'API est volontairement minimal :
-
-```http
-POST /api/v1/predict
-Content-Type: application/json
-
-{ "match_id": 142, "features": { ... } }
-
-→ 200 OK
-{ "issue": "1", "score_estime": "2-1", "confiance": 0.71, "justification": "..." }
-```
-
-### Étape 4 — Affichage (frontend)
-
-Le dashboard HTML5/CSS lit l'état courant (matchs du jour, indice de risque, dernier pronostic) et l'affiche sous forme de **cartes translucides en glassmorphism** (effet *liquid glass*), superposées à un arrière-plan visuel riche. Voir `frontend/`.
-
----
-
-## 4. Pile technique
-
-| Couche | Technologie | Justification |
-|--------|-------------|---------------|
-| Ingestion | Python 3.11 (`requests`, `httpx`, `BeautifulSoup`/`playwright`) | écosystème scraping mature |
-| Ordonnancement | APScheduler (embarqué dans FastAPI) + `launchd` (macOS) | planification interne, service 24/7 auto-relancé |
-| Stockage | PostgreSQL 16 | triggers, contraintes, JSONB |
-| Orchestration LLM | FastAPI (gateway) | contrat REST simple |
-| Frontend | HTML5 + CSS pur | zéro build, glassmorphism natif |
-| Supervision | Nagios Core + NRPE | surveillance des daemons vitaux |
-
----
-
-## 5. La règle d'or : l'Indice de Risque
-
-L'**Indice de Risque** d'un match (`Matchs.indice_risque`, 0 = match « lisible », 100 = très incertain) est **recalculé automatiquement par un trigger** à chaque insertion dans `Contexte_Actu`. Une blessure de joueur majeur, une suspension ou une rumeur à fort impact font grimper l'indice. Le LLM consomme cet indice comme *feature* de premier plan. Détails et code : [`database/schema.sql`](database/schema.sql).
-
----
-
-## 6. Structure du dépôt
+## Structure du dépôt
 
 ```
 CDM/
-├── README.md                       # ce fichier
-├── serveur_api.py                  # FastAPI : frontend + API + APScheduler
-├── com.thomas.oracle2026.plist     # LaunchAgent macOS (service 24/7)
+├── README.md
+├── serveur_api.py                  # FastAPI : page + API + planificateur
+├── com.thomas.oracle2026.plist     # service launchd (24/7)
 ├── requirements.txt
+├── .env.example                    # gabarit de configuration
 ├── database/
-│   ├── schema.sql                  # tables + triggers PostgreSQL
-│   └── seed_calendrier.py          # injection des 104 slots CDM 2026
+│   ├── schema.sql                  # tables + triggers
+│   ├── seed_calendrier.py          # 104 slots de matchs de la CDM 2026
+│   └── seed_classements.py         # classements FIFA réels + force des équipes
 ├── ingestion/
-│   ├── scraper_daemon.py           # ingestion API RapidAPI + RSS -> PostgreSQL
-│   └── moteur_ia.py                # pronostics LLM local (Ollama / llama3)
+│   ├── scraper_daemon.py           # ESPN + RSS -> PostgreSQL
+│   └── moteur_ia.py                # pronostics llama3 via Ollama
 ├── frontend/
-│   ├── index.html                  # dashboard (3 onglets, servi par FastAPI)
-│   └── style.css                   # design system liquid glass
-├── monitoring/
-│   ├── commands.cfg                # Nagios Core (serveur de supervision)
-│   └── nrpe.cfg                    # agent NRPE (hôte surveillé)
+│   ├── index.html                  # dashboard (3 onglets, thème clair/sombre)
+│   └── style.css
+├── monitoring/                     # configs Nagios/NRPE (cf. note plus bas)
+│   ├── commands.cfg
+│   └── nrpe.cfg
 └── docs/
-    └── MONITORING.md               # supervision Nagios/NRPE
+    └── MONITORING.md
 ```
 
----
+## Installation
 
-## 7. Installation rapide (environnement de test macOS)
+Il faut PostgreSQL, Python et Ollama sur la machine.
 
 ```bash
 # 1. Base de données
@@ -155,75 +92,63 @@ brew install postgresql@16 && brew services start postgresql@16
 createdb oracle2026
 psql oracle2026 -f database/schema.sql
 
-# 2. Environnement Python
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+# 2. Rôle applicatif (le serveur ne se connecte jamais en superutilisateur)
+psql oracle2026 -c "CREATE ROLE scraper LOGIN PASSWORD 'choisis_un_mot_de_passe';
+  GRANT USAGE ON SCHEMA public TO scraper;
+  GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO scraper;
+  GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO scraper;"
 
-# 3. Vérifier le fuseau du serveur (doit être GMT+4)
-sudo systemsetup -gettimezone        # attendu : Asia/Dubai ou équivalent +04
+# 3. Modèle d'IA local
+brew install ollama && brew services start ollama
+ollama pull llama3
 
-# 4. Installer le service 24/7 (détails en §8)
-cp com.thomas.oracle2026.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+# 4. Python
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# 5. Configuration : copier le gabarit et remplir les accès DB_*
+cp .env.example .env   # puis éditer .env
+
+# 6. Données de départ
+.venv/bin/python database/seed_calendrier.py    # les 104 matchs (équipes à déterminer)
+.venv/bin/python database/seed_classements.py   # classements FIFA réels
 ```
 
----
+## Lancement et exploitation
 
-## 8. Planification & service 24/7
-
-### Planification interne (APScheduler — plus de cron)
-
-La planification n'utilise **plus `cron`** : le serveur FastAPI (`serveur_api.py`)
-embarque un `BackgroundScheduler` APScheduler, démarré avec l'application
-(*lifespan*) et arrêté proprement avec elle. Démarrer le serveur suffit —
-aucun crontab à installer.
-
-| Tâche | Cadence | Garde-fous |
-|-------|---------|------------|
-| `tache_ingestion` (API RapidAPI + RSS + réconciliation) | toutes les 60 min | hors fenêtre 01h–09h GMT+4 : sortie immédiate ; quota : 1 appel API/jour (verrou fichier) |
-| `tache_moteur_ia` (pronostics llama3 via Ollama) | toutes les 65 min | ne traite que les matchs sans pronostic `VALIDE` (l'obsolescence est décidée par les triggers SQL) |
-
-Chaque tâche est journalisée et blindée (`max_instances=1`, `coalesce`) : un
-cycle en échec ou trop lent ne tue ni ne double jamais le suivant.
-
-### Service macOS `launchd` (autonomie 24/7)
-
-Le LaunchAgent [`com.thomas.oracle2026.plist`](com.thomas.oracle2026.plist)
-démarre uvicorn au login (`RunAtLoad`) et le **relance automatiquement** s'il
-tombe (`KeepAlive`). Il écoute sur `0.0.0.0:8000` (accès LAN/tunnel) et écrit
-ses logs dans `logs/server.log`.
+Le service `launchd` fait tout démarrer au login du Mac et relance le serveur s'il s'arrête.
 
 ```bash
-# Installation / démarrage immédiat
+# Installer le service
 cp com.thomas.oracle2026.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 
-# Contrôle
-launchctl list | grep oracle2026     # le service tourne ?
-tail -f logs/server.log              # logs uvicorn + tâches de fond
-curl -s http://localhost:8000/api/kpis
+# Le dashboard est sur http://localhost:8000
 
-# Arrêt / désinstallation
+# Vérifier que tout tourne
+launchctl list | grep oracle2026          # le serveur
+brew services list | grep -E 'postgres|ollama'
+tail -f logs/server.log                   # logs du serveur + des tâches de fond
+
+# Recharger après une modif du code serveur
 launchctl unload ~/Library/LaunchAgents/com.thomas.oracle2026.plist
+launchctl load   ~/Library/LaunchAgents/com.thomas.oracle2026.plist
 ```
 
-> ⚠ Après modification du code serveur, recharger le service
-> (`launchctl unload` puis `load`) pour qu'uvicorn redémarre avec la
-> nouvelle version.
+Le planificateur relance l'ingestion toutes les 60 minutes et le moteur d'IA toutes les 65. L'ingestion tourne jour et nuit : le RSS est gratuit, et les appels à l'API de secours sont limités à trois par jour, espacés. Le moteur d'IA ne pronostique que les matchs à venir qui n'ont pas encore de pronostic valide — c'est la base, via ses triggers, qui décide de ce qui doit être (re)calculé.
 
----
+Pour accéder au dashboard depuis un téléphone, l'IP locale du Mac suffit sur le même Wi-Fi (`ipconfig getifaddr en0`, puis `http://CETTE-IP:8000`). Pour l'extérieur, un tunnel (ngrok, cloudflared) vers le port 8000.
 
-## 9. Roadmap
+## Ce qu'il faut savoir (limites assumées)
 
-- [x] Schéma relationnel + triggers métier
-- [x] Frontend glassmorphism (fondation)
-- [x] Supervision Nagios/NRPE
-- [ ] Implémentation des 3 scrapers
-- [ ] Branchement de l'API LLM léger (phase 2)
-- [ ] Backtesting des pronostics vs résultats réels
+- **Le modèle est modeste.** llama3 8B s'appuie sur le favori FIFA et le contexte de presse, sans finesse tactique. On l'a bridé pour qu'il n'invente pas, mais il ne fait pas de miracle : sur un match sans contexte, il suit le favori et baisse sa confiance.
+- **Les classements FIFA sont un instantané.** `seed_classements.py` contient le classement de juin 2026. La FIFA en publie un nouveau tous les deux mois environ — relancer le script pour rafraîchir.
+- **Aucune authentification.** Le serveur écoute sur `0.0.0.0` : sur ton réseau, n'importe qui peut voir le dashboard. Acceptable à la maison, à protéger derrière un tunnel à URL privée si tu l'exposes.
+- **La supervision Nagios/NRPE est documentée, pas déployée.** Les fichiers de `monitoring/` et `docs/MONITORING.md` décrivent comment surveiller le pipeline en production ; rien ne tourne pour l'instant.
 
----
+## Pistes pour la suite
 
-## 10. Licence & avertissement
-
-Projet à but technique/éducatif. Le scraping doit respecter les CGU des sources et la législation applicable. Les pronostics sont indicatifs et ne constituent pas une incitation au jeu.
+- récupérer les classements FIFA automatiquement plutôt qu'à la main ;
+- comparer les pronostics aux résultats réels pour mesurer la justesse dans le temps ;
+- une vraie suite de tests automatisés ;
+- déployer la supervision Nagios si le projet quitte la machine de test.
