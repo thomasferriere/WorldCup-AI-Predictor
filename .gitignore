@@ -5,4 +5,7 @@ __pycache__/
 logs/
 .DS_Store
 .env
+# Fichiers d'état locaux de l'ingestion (cache, jamais versionnés)
 ingestion/.matchs_du_jour.json
+ingestion/.derniere_date_api
+ingestion/.derniere_reponse_api.json
