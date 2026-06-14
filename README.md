@@ -141,6 +141,15 @@ Le planificateur relance l'ingestion toutes les 60 minutes et le moteur d'IA tou
 
 Pour accéder au dashboard depuis un téléphone, l'IP locale du Mac suffit sur le même Wi-Fi (`ipconfig getifaddr en0`, puis `http://CETTE-IP:8000`). Pour l'extérieur, un tunnel (ngrok, cloudflared) vers le port 8000.
 
+## Tests
+
+La logique pure (garde-fou quota, cohérence issue/score d'un pronostic, signal de pari, normalisation des matchs ESPN, dérivation de force FIFA) est couverte par une suite pytest qui ne touche ni à la base ni au réseau.
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests/ -q
+```
+
 ## Ce qu'il faut savoir (limites assumées)
 
 - **Le modèle est modeste.** llama3 8B s'appuie sur le favori FIFA et le contexte de presse, sans finesse tactique. On l'a bridé pour qu'il n'invente pas, mais il ne fait pas de miracle : sur un match sans contexte, il suit le favori et baisse sa confiance.

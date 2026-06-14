@@ -1,0 +1,4 @@
+# Dépendances de développement (tests). Installer avec :
+#   .venv/bin/pip install -r requirements-dev.txt
+-r requirements.txt
+pytest==9.1.0
