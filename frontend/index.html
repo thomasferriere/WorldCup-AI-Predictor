@@ -9,9 +9,11 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/frontend/style.css?v=3.0" />
     <script>
-        // Applique le thème mémorisé avant le rendu (évite le flash de couleur).
+        // Applique le thème avant le rendu (évite le flash) : un paramètre
+        // d'URL ?theme=light|dark prime, sinon le choix mémorisé, sinon le système.
         (function () {
-            const t = localStorage.getItem('theme');
+            const param = new URLSearchParams(location.search).get('theme');
+            const t = (param === 'light' || param === 'dark') ? param : localStorage.getItem('theme');
             if (t) document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
