@@ -1,4 +1,4 @@
-# Oracle 2026 — pronostics Coupe du Monde
+# WorldCup-AI-Predictor - pronostics Coupe du Monde
 
 ![tests](https://github.com/thomasferriere/WorldCup-AI-Predictor/actions/workflows/tests.yml/badge.svg)
 [![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
@@ -9,7 +9,7 @@ Un tableau de bord personnel qui suit la Coupe du Monde 2026 tout seul. Il récu
 
 ## Aperçu
 
-Thème clair et thème sombre — le dashboard suit le système, avec une bascule manuelle (ou `?theme=light|dark` dans l'URL) :
+Thème clair et thème sombre - le dashboard suit le système, avec une bascule manuelle (ou `?theme=light|dark` dans l'URL) :
 
 <p align="center">
   <img src="docs/screenshots/dashboard-light.png" width="49%" alt="Dashboard Oracle 2026 — thème clair" />
