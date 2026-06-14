@@ -1,5 +1,8 @@
 # Oracle 2026 — pronostics Coupe du Monde
 
+![tests](https://github.com/thomasferriere/WorldCup-AI-Predictor/actions/workflows/tests.yml/badge.svg)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 Un tableau de bord personnel qui suit la Coupe du Monde 2026 tout seul. Il récupère les matchs et les scores, lit la presse pour repérer ce qui peut faire basculer une rencontre, en tire un indice de risque, puis demande son avis à un modèle d'IA local avant d'afficher le résultat sur une page web sobre. Une fois lancé, il tourne sur un Mac sans qu'on ait à y toucher.
 
 À garder en tête : c'est un projet technique, pas un outil de pari. Les pronostics sont indicatifs.
