@@ -150,6 +150,8 @@ La logique pure (garde-fou quota, cohérence issue/score d'un pronostic, signal 
 .venv/bin/python -m pytest tests/ -q
 ```
 
+Ces tests tournent aussi automatiquement à chaque push via GitHub Actions (`.github/workflows/tests.yml`).
+
 ## Ce qu'il faut savoir (limites assumées)
 
 - **Le modèle est modeste.** llama3 8B s'appuie sur le favori FIFA et le contexte de presse, sans finesse tactique. On l'a bridé pour qu'il n'invente pas, mais il ne fait pas de miracle : sur un match sans contexte, il suit le favori et baisse sa confiance.
