@@ -183,3 +183,11 @@ Ces tests tournent aussi automatiquement à chaque push via GitHub Actions (`.gi
 - comparer les pronostics aux résultats réels pour mesurer la justesse dans le temps ;
 - une vraie suite de tests automatisés ;
 - déployer la supervision Nagios si le projet quitte la machine de test.
+
+## À propos de ce projet
+
+Ce projet a été développé avec les outils modernes du développement en 2026, 
+incluant l'assistance par IA (Claude). 
+
+**Important** : L'architecture, les décisions techniques et le design de la base de données 
+sont les miens. L'IA a été utilisée pour accélérer l'implémentation, pas pour la remplacer.
